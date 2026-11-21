@@ -1,0 +1,4 @@
+.build/
+.swiftpm/
+LiteTube.app/
+.DS_Store
