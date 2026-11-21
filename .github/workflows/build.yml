@@ -1,0 +1,98 @@
+name: build artifacts
+
+# Shared build half of a release, used by both:
+#   - release.yml      a v* tag you push yourself (or manual dispatch)
+#   - auto-release.yml every push to main (a rolling patch bump)
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: Version stamped into the app bundle (blank = bump the newest tag)
+        required: false
+        type: string
+        default: ""
+      publish:
+        description: Publish the PKG from the build job instead of uploading it
+        required: false
+        type: boolean
+        default: false
+      macos:
+        description: JSON matrix (runner + arch) of the macOS builds
+        required: false
+        type: string
+        default: '[{"runner":"macos-15","arch":"arm64"}]'
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  macos:
+    name: macOS (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(inputs.macos) }}
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Version
+        id: ver
+        run: |
+          VERSION=$(tools/next-version.sh "${{ inputs.version }}")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "building $VERSION"
+
+      - name: Build the app bundle
+        env:
+          LITETUBE_VERSION: ${{ steps.ver.outputs.version }}
+        run: ./build_app.sh
+
+      - name: Verify the app bundle
+        run: |
+          codesign --verify --deep --strict LiteTube.app
+          test -x LiteTube.app/Contents/MacOS/LiteTube
+          test -f LiteTube.app/Contents/Info.plist
+
+      - name: Make the PKG
+        env:
+          LITETUBE_VERSION: ${{ steps.ver.outputs.version }}
+        run: ./make-pkg.sh "LiteTube-${{ steps.ver.outputs.version }}-${{ matrix.arch }}.pkg"
+
+      - name: Verify the PKG
+        run: |
+          set -euo pipefail
+          ls -l LiteTube-*.pkg
+          BASE="${RUNNER_TEMP:-${TMPDIR:-/tmp}}"
+          mkdir -p "$BASE"
+          TMP=$(mktemp -d "$BASE/litetube-pkg.XXXXXX")
+          trap 'rm -rf "$TMP"' EXIT
+          pkgutil --payload-files LiteTube-*.pkg | tee "$TMP/payload-files.txt"
+          grep -q 'LiteTube\.app/Contents/MacOS/LiteTube' "$TMP/payload-files.txt"
+          pkgutil --expand-full LiteTube-*.pkg "$TMP/expanded"
+          PKGINFO=$(find "$TMP/expanded" -maxdepth 2 -name PackageInfo -print -quit)
+          test -n "$PKGINFO"
+          grep -q 'install-location="/Applications"' "$PKGINFO"
+          PREINSTALL=$(find "$TMP/expanded" -type f -name preinstall -print -quit)
+          test -n "$PREINSTALL"
+          grep -q 'display dialog' "$PREINSTALL"
+          test -x macos-pkg-scripts/preinstall
+
+      - name: Publish the PKG
+        if: ${{ inputs.publish }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET: ${{ github.sha }}
+        run: |
+          tools/await-preflight.sh
+          tools/publish-release.sh "${{ steps.ver.outputs.version }}" \
+            "LiteTube-${{ steps.ver.outputs.version }}-${{ matrix.arch }}.pkg"
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ !inputs.publish }}
+        with:
+          name: LiteTube-${{ matrix.arch }}
+          path: LiteTube-*.pkg
+          if-no-files-found: error

@@ -1,0 +1,68 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version stamped into the app bundle
+        required: false
+        default: "1.0.0"
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  actions: write
+  contents: write
+
+jobs:
+  version:
+    name: version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+    steps:
+      - name: Version
+        id: ver
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+          fi
+
+  preflight:
+    name: preflight
+    needs: version
+    uses: ./.github/workflows/preflight.yml
+
+  cancel-builds-on-preflight-failure:
+    name: cancel builds when preflight fails
+    needs: preflight
+    if: ${{ needs.preflight.result == 'failure' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Cancel the workflow run
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh run cancel "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY"
+
+  macos:
+    name: build Apple Silicon PKG
+    needs: version
+    uses: ./.github/workflows/build.yml
+    with:
+      version: ${{ needs.version.outputs.version }}
+      macos: '[{"runner":"macos-15","arch":"arm64"}]'
+    secrets: inherit
+
+  publish-macos:
+    name: publish Apple Silicon PKG
+    needs: [version, preflight, macos]
+    if: ${{ !cancelled() && needs.preflight.result == 'success' && needs.macos.result == 'success' && startsWith(github.ref, 'refs/tags/') }}
+    uses: ./.github/workflows/publish-artifact.yml
+    with:
+      version: ${{ needs.version.outputs.version }}
+      artifact: LiteTube-arm64
+      filename: LiteTube-${{ needs.version.outputs.version }}-arm64.pkg
+    secrets: inherit

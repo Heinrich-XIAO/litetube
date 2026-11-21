@@ -1,0 +1,46 @@
+name: Publish release artifact
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: Release version without the v prefix
+        required: true
+        type: string
+      artifact:
+        description: Actions artifact name to publish
+        required: true
+        type: string
+      filename:
+        description: Final release asset filename
+        required: true
+        type: string
+
+concurrency:
+  group: publish-release-${{ inputs.version }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.artifact }}
+          path: incoming
+
+      - name: Publish the artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET: ${{ github.sha }}
+        run: |
+          FILE=$(find incoming -maxdepth 1 -type f -print -quit)
+          test -n "$FILE"
+          mkdir -p upload
+          cp "$FILE" "upload/${{ inputs.filename }}"
+          tools/publish-release.sh "${{ inputs.version }}" "upload/${{ inputs.filename }}"

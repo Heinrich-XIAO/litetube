@@ -1,0 +1,28 @@
+name: Preflight
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    name: preflight
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check shell scripts
+        run: |
+          sh -n install-macos.sh make-pkg.sh macos-pkg-scripts/preinstall \
+            tools/next-version.sh tools/publish-release.sh tools/await-preflight.sh
+          bash -n build_app.sh
+          test -x macos-pkg-scripts/preinstall
+
+      - name: Build & test Swift package
+        run: |
+          swift build
+          if [ -d Tests ]; then
+            swift test
+          fi

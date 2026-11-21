@@ -4,7 +4,10 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT_DIR"
 
-echo "Building LiteTube (release, arm64)..."
+VERSION="${LITETUBE_VERSION:-1.0.0}"
+VERSION="${VERSION#v}"
+
+echo "Building LiteTube $VERSION (release, arm64)..."
 swift build -c release
 
 BIN_PATH="$(swift build -c release --show-bin-path)/LiteTube"
@@ -18,7 +21,9 @@ if [ -f "$ROOT_DIR/AppIcon.icns" ]; then
     cp "$ROOT_DIR/AppIcon.icns" "$APP_DIR/Contents/Resources/AppIcon.icns"
 fi
 
-cat > "$APP_DIR/Contents/Info.plist" <<'PLIST'
+printf 'APPL????' > "$APP_DIR/Contents/PkgInfo"
+
+cat > "$APP_DIR/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -40,9 +45,9 @@ cat > "$APP_DIR/Contents/Info.plist" <<'PLIST'
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.0.0</string>
+    <string>${VERSION}</string>
     <key>CFBundleVersion</key>
-    <string>1</string>
+    <string>${VERSION}</string>
     <key>LSMinimumSystemVersion</key>
     <string>13.0</string>
     <key>NSHighResolutionCapable</key>
@@ -69,6 +74,6 @@ cat > "$APP_DIR/Contents/Info.plist" <<'PLIST'
 </plist>
 PLIST
 
-codesign --force --deep --sign - "$APP_DIR" 2>/dev/null || true
-echo "Built: $APP_DIR"
+codesign --force --deep --sign - "$APP_DIR"
+echo "Built: $APP_DIR (version $VERSION)"
 ls -lh "$APP_DIR/Contents/MacOS/LiteTube"
