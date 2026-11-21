@@ -1,0 +1,47 @@
+name: Auto release
+
+# Every push to main creates a patch release with the Apple Silicon PKG.
+# Preflight runs alongside it, and a failure there cancels the workflow.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version to publish (blank = bump the patch of the newest tag)
+        required: false
+        default: ""
+
+concurrency:
+  group: auto-release
+  cancel-in-progress: false
+
+permissions:
+  actions: write
+  contents: write
+
+jobs:
+  preflight:
+    name: preflight
+    uses: ./.github/workflows/preflight.yml
+
+  cancel-builds-on-preflight-failure:
+    name: cancel builds when preflight fails
+    needs: preflight
+    if: ${{ needs.preflight.result == 'failure' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Cancel the workflow run
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh run cancel "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY"
+
+  macos:
+    name: build Apple Silicon PKG
+    uses: ./.github/workflows/build.yml
+    with:
+      version: ${{ inputs.version }}
+      publish: true
+      macos: '[{"runner":"macos-15","arch":"arm64"}]'
+    secrets: inherit

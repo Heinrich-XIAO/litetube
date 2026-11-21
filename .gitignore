@@ -1,4 +1,8 @@
 .build/
 .swiftpm/
 LiteTube.app/
+*.pkg
 .DS_Store
+
+__pycache__/
+*.pyc
