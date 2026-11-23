@@ -78,6 +78,8 @@ final class ChannelHeaderView: NSView, NSCollectionViewElement {
 
             infoStack.leadingAnchor.constraint(equalTo: avatarView.trailingAnchor, constant: 16),
             infoStack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -24),
+            // The stack is leading-aligned, so a label takes its unwrapped width unless it is pinned to the stack's edge.
+            descLabel.trailingAnchor.constraint(equalTo: infoStack.trailingAnchor),
             infoStack.topAnchor.constraint(equalTo: bannerLayerHost.bottomAnchor, constant: 12),
 
             tabPreferredTop,

@@ -330,7 +330,9 @@ final class PillButton: NSButton {
         // The cell's size already includes the horizontal padding (see PillButtonCell), so don't add it again.
         let base = super.intrinsicContentSize
         let minW: CGFloat = title.isEmpty ? 32 : 0
-        return NSSize(width: max(minW, base.width), height: max(32, base.height + 8))
+        // Icon-only pills use the same 32pt height as labelled ones, so the square doesn't stand taller in the row.
+        let height: CGFloat = title.isEmpty ? 32 : max(32, base.height + 8)
+        return NSSize(width: max(minW, base.width), height: height)
     }
 
     override var isEnabled: Bool { didSet { updateStyle() } }

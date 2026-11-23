@@ -57,6 +57,9 @@ enum SelfTest {
         log("SELFTEST route watch")
         failures += ambiguousViews(in: content, label: "watch")
 
+        // Updater logic: version compare, asset pick, checksums, shell quoting, swap script.
+        failures += AppUpdater.selfChecks()
+
         if failures.isEmpty {
             log("SELFTEST PASS")
             exit(0)

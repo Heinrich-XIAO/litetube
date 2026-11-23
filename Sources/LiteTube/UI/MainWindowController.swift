@@ -1663,7 +1663,14 @@ private final class SettingsViewController: NSViewController {
         stack.addArrangedSubview(controlColumn(pauseHistoryCheck))
         stack.addArrangedSubview(controlColumn(trimBtn))
         let trimHelp = makeLabel("Clears cached thumbnails and network responses. Playback is not affected.", size: 12, color: YTTheme.textSecondary, maxLines: 2)
-        stack.addArrangedSubview(controlColumn(trimHelp))
+        let trimHelpRow = controlColumn(trimHelp)
+        stack.addArrangedSubview(trimHelpRow)
+        stack.setCustomSpacing(22, after: trimHelpRow)
+        stack.addArrangedSubview(heading("Updates"))
+        let updates = UpdatesSection()
+        stack.addArrangedSubview(updates)
+        updates.leadingAnchor.constraint(equalTo: stack.leadingAnchor).isActive = true
+        updates.trailingAnchor.constraint(equalTo: stack.trailingAnchor).isActive = true
 
         NSLayoutConstraint.activate([
             stack.topAnchor.constraint(equalTo: view.topAnchor, constant: 20),

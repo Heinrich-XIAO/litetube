@@ -21,6 +21,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         }
         wc.showWindow(nil)
         NSApp.activate(ignoringOtherApps: true)
+        if ProcessInfo.processInfo.environment["LITETUBE_SELFTEST"] != "1" {
+            AppUpdater.shared.start()
+        }
 
         if let raw = initialURL, !raw.isEmpty {
             wc.openURLString(raw)
