@@ -41,6 +41,7 @@ final class SearchViewController: NSViewController, NSTableViewDataSource, NSTab
     private let retryBtn = PillButton()
     private let footerView = NSView(frame: NSRect(x: 0, y: 0, width: 400, height: 56))
     private let loadMoreBtn = PillButton()
+    private var nearEnd: NearEndLoader!
 
     override func loadView() {
         let root = NSView()
@@ -95,6 +96,10 @@ final class SearchViewController: NSViewController, NSTableViewDataSource, NSTab
         }
 
         scrollView.documentView = tableView
+        nearEnd = NearEndLoader(scrollView: scrollView, hasMore: { [weak self] in
+            guard let self else { return false }
+            return self.continuationToken != nil && !self.isLoading
+        }, loadNext: { [weak self] in self?.loadMore() })
         scrollView.hasVerticalScroller = true
         scrollView.drawsBackground = false
         scrollView.translatesAutoresizingMaskIntoConstraints = false
@@ -117,9 +122,9 @@ final class SearchViewController: NSViewController, NSTableViewDataSource, NSTab
         retryBtn.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(retryBtn)
 
-        loadMoreBtn.title = "Load more"
+        loadMoreBtn.title = "Try again"
         loadMoreBtn.cornerRadiusValue = 16
-        loadMoreBtn.target = self; loadMoreBtn.action = #selector(loadMore)
+        loadMoreBtn.target = self; loadMoreBtn.action = #selector(loadMoreButtonClicked)
         loadMoreBtn.translatesAutoresizingMaskIntoConstraints = false
         footerView.addSubview(loadMoreBtn)
 
@@ -209,6 +214,7 @@ final class SearchViewController: NSViewController, NSTableViewDataSource, NSTab
         results = []
         continuationToken = nil
         isLoading = false
+        nearEnd.resume()
         emptyLabel.isHidden = true
         resultSummary.stringValue = "Searching for \"\(q)\"…"
         tableView.reloadData()
@@ -237,6 +243,7 @@ final class SearchViewController: NSViewController, NSTableViewDataSource, NSTab
                     self.emptyLabel.isHidden = true
                 }
                 self.tableView.reloadData()
+                self.nearEnd.check()
             }
         }
     }
@@ -253,6 +260,12 @@ final class SearchViewController: NSViewController, NSTableViewDataSource, NSTab
         if !query.isEmpty { performSearch(query, resetFilters: false) }
     }
 
+    /// The fallback control, shown only after an automatic load failed.
+    @objc private func loadMoreButtonClicked() {
+        nearEnd.resume()
+        loadMore()
+    }
+
     @objc private func loadMore() {
         guard let tok = continuationToken, !isLoading else { return }
         let gen = searchGeneration
@@ -262,16 +275,19 @@ final class SearchViewController: NSViewController, NSTableViewDataSource, NSTab
         YouTubeAPI.shared.search(query: query, filters: filters, continuation: tok) { [weak self] res in
             guard let self = self, self.searchGeneration == gen else { return }
             self.isLoading = false
-            self.loadMoreBtn.title = "Load more"
+            self.loadMoreBtn.title = "Try again"
             self.loadMoreBtn.isEnabled = true
             switch res {
             case .failure:
+                self.nearEnd.pause()
+                self.tableView.reloadData()
                 self.navDelegate?.showToastMessage("Could not load more results. Check your connection.")
             case .success(let (more, next)):
                 self.results.append(contentsOf: more)
                 self.continuationToken = next
                 self.resultSummary.stringValue = "\(self.results.count) results for \"\(self.query)\""
                 self.tableView.reloadData()
+                self.nearEnd.check()
             }
         }
     }
@@ -279,7 +295,8 @@ final class SearchViewController: NSViewController, NSTableViewDataSource, NSTab
     // MARK: - TableView
 
     func numberOfRows(in tableView: NSTableView) -> Int {
-        results.count + (continuationToken != nil ? 1 : 0)
+        // The footer row appears only after an automatic load failed, with a button to retry.
+        results.count + (continuationToken != nil && nearEnd.paused ? 1 : 0)
     }
 
     func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {

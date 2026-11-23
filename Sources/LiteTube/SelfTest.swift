@@ -59,6 +59,7 @@ enum SelfTest {
 
         // Updater logic: version compare, asset pick, checksums, shell quoting, swap script.
         failures += AppUpdater.selfChecks()
+        failures += NearEndLoader.selfChecks()
 
         if failures.isEmpty {
             log("SELFTEST PASS")

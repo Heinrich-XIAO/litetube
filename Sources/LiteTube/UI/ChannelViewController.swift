@@ -139,6 +139,7 @@ final class ChannelViewController: NSViewController, NSCollectionViewDataSource,
     private var showingPlaylists = false
     private var continuationToken: String?
     private var isLoadingMore = false
+    private var nearEnd: NearEndLoader!
     private var loadGeneration = 0
 
     private weak var headerViewRef: ChannelHeaderView?
@@ -179,6 +180,10 @@ final class ChannelViewController: NSViewController, NSCollectionViewDataSource,
         collectionView.register(CollectionLoadMoreFooter.self, forSupplementaryViewOfKind: NSCollectionView.elementKindSectionFooter, withIdentifier: CollectionLoadMoreFooter.identifier)
 
         scrollView.documentView = collectionView
+        nearEnd = NearEndLoader(scrollView: scrollView, hasMore: { [weak self] in
+            guard let self else { return false }
+            return self.continuationToken != nil && !self.isLoadingMore
+        }, loadNext: { [weak self] in self?.loadMore() })
         scrollView.hasVerticalScroller = true
         scrollView.drawsBackground = false
         scrollView.translatesAutoresizingMaskIntoConstraints = false
@@ -253,6 +258,7 @@ final class ChannelViewController: NSViewController, NSCollectionViewDataSource,
         self.showingPlaylists = false
         self.continuationToken = nil
         self.isLoadingMore = false
+        self.nearEnd.resume()
         self.emptyLabel.isHidden = true
         collectionView.reloadData()
         spinner.startAnimation(nil)
@@ -288,6 +294,7 @@ final class ChannelViewController: NSViewController, NSCollectionViewDataSource,
                 self.emptyLabel.stringValue = "No items in this tab. Try another tab above."
                 self.emptyLabel.isHidden = count > 0
                 self.collectionView.reloadData()
+                self.nearEnd.check()
             }
         }
     }
@@ -336,6 +343,7 @@ final class ChannelViewController: NSViewController, NSCollectionViewDataSource,
         playlists = []
         continuationToken = nil
         isLoadingMore = false
+        nearEnd.resume()
         emptyLabel.isHidden = true
         collectionView.reloadData()
         spinner.startAnimation(nil)
@@ -353,8 +361,15 @@ final class ChannelViewController: NSViewController, NSCollectionViewDataSource,
                 self.emptyLabel.stringValue = "No items in this tab. Try another tab above."
                 self.emptyLabel.isHidden = count > 0
                 self.collectionView.reloadData()
+                self.nearEnd.check()
             }
         }
+    }
+
+    /// The fallback control, shown only after an automatic load failed.
+    @objc private func loadMoreButtonClicked() {
+        nearEnd.resume()
+        loadMore()
     }
 
     @objc private func loadMore() {
@@ -367,6 +382,7 @@ final class ChannelViewController: NSViewController, NSCollectionViewDataSource,
             self.isLoadingMore = false
             switch res {
             case .failure:
+                self.nearEnd.pause()
                 self.navDelegate?.showToastMessage("Could not load more videos. Check your connection.")
             case .success(let (more, next)):
                 let existing = Set(self.videos.map(\.id))
@@ -374,6 +390,7 @@ final class ChannelViewController: NSViewController, NSCollectionViewDataSource,
                 self.continuationToken = next
             }
             self.collectionView.reloadData()
+            self.nearEnd.check()
         }
     }
 
@@ -433,7 +450,8 @@ final class ChannelViewController: NSViewController, NSCollectionViewDataSource,
     }
 
     func collectionView(_ collectionView: NSCollectionView, layout collectionViewLayout: NSCollectionViewLayout, referenceSizeForFooterInSection section: Int) -> NSSize {
-        continuationToken != nil ? NSSize(width: max(320, scrollView.contentSize.width), height: 64) : .zero
+        // Shown only when an automatic load failed; otherwise the next page loads before the reader gets there.
+        continuationToken != nil && nearEnd.paused ? NSSize(width: max(320, scrollView.contentSize.width), height: 64) : .zero
     }
 
     func collectionView(_ collectionView: NSCollectionView, viewForSupplementaryElementOfKind kind: NSCollectionView.SupplementaryElementKind, at indexPath: IndexPath) -> NSView {
@@ -443,10 +461,10 @@ final class ChannelViewController: NSViewController, NSCollectionViewDataSource,
             return header
         }
         let footer = collectionView.makeSupplementaryView(ofKind: kind, withIdentifier: CollectionLoadMoreFooter.identifier, for: indexPath) as! CollectionLoadMoreFooter
-        footer.button.title = isLoadingMore ? "Loading…" : "Load more"
+        footer.button.title = isLoadingMore ? "Loading…" : "Try again"
         footer.button.isEnabled = !isLoadingMore
         footer.button.target = self
-        footer.button.action = #selector(loadMore)
+        footer.button.action = #selector(loadMoreButtonClicked)
         return footer
     }
 

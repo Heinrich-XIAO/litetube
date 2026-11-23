@@ -100,6 +100,9 @@ final class WatchViewController: NSViewController, PlayerViewDelegate, NSTableVi
     private var activeSideTab: SidebarTab = .upNext
     private var relatedVideos: [VideoItem] = []
     private var relatedContinuation: String?
+    /// Load the next comments and related videos before the reader reaches the end of each list.
+    private var commentsLoader: NearEndLoader!
+    private var relatedLoader: NearEndLoader!
     private var filteredCues: [CaptionCue] = []
     private var lastRecordedHistorySec: Double = -99
 
@@ -128,6 +131,13 @@ final class WatchViewController: NSViewController, PlayerViewDelegate, NSTableVi
 
         docView.translatesAutoresizingMaskIntoConstraints = false
         scrollView.documentView = docView
+        commentsLoader = NearEndLoader(scrollView: scrollView, hasMore: { [weak self] in
+            guard let self else { return false }
+            return self.commentsContinuation != nil && !self.isLoadingComments
+        }, loadNext: { [weak self] in
+            guard let self, let tok = self.commentsContinuation else { return }
+            self.loadComments(token: tok, replace: false)
+        })
 
         // Player container
         playerSlot.wantsLayer = true
@@ -386,6 +396,10 @@ final class WatchViewController: NSViewController, PlayerViewDelegate, NSTableVi
         sideTable.activatesOnSpace = false
 
         sideTableScroll.documentView = sideTable
+        relatedLoader = NearEndLoader(scrollView: sideTableScroll, hasMore: { [weak self] in
+            guard let self else { return false }
+            return self.relatedContinuation != nil && self.activeSideTab == .upNext
+        }, loadNext: { [weak self] in self?.loadMoreRelated() })
         sideTableScroll.hasVerticalScroller = true
         sideTableScroll.scrollerStyle = .overlay
         sideTableScroll.drawsBackground = false
@@ -396,9 +410,9 @@ final class WatchViewController: NSViewController, PlayerViewDelegate, NSTableVi
         sideEmptyLabel.isHidden = true
         sidebarColumn.addSubview(sideEmptyLabel)
 
-        loadMoreRelatedBtn.title = "Show more related"
+        loadMoreRelatedBtn.title = "Try again"
         loadMoreRelatedBtn.cornerRadiusValue = 14
-        loadMoreRelatedBtn.target = self; loadMoreRelatedBtn.action = #selector(loadMoreRelated)
+        loadMoreRelatedBtn.target = self; loadMoreRelatedBtn.action = #selector(loadMoreRelatedButtonClicked)
         loadMoreRelatedBtn.isHidden = true
         loadMoreRelatedBtn.translatesAutoresizingMaskIntoConstraints = false
         sidebarColumn.addSubview(loadMoreRelatedBtn)
@@ -634,11 +648,13 @@ final class WatchViewController: NSViewController, PlayerViewDelegate, NSTableVi
         details = nil
         comments = []
         commentsContinuation = nil
+        commentsLoader.resume()
         commentsGeneration += 1
         loadingReplyIndices.removeAll()
         isLoadingComments = false
         relatedVideos = []
         relatedContinuation = nil
+        relatedLoader.resume()
         filteredCues = []
         transcriptSearch.stringValue = ""
         isDescriptionExpanded = false
@@ -709,8 +725,9 @@ final class WatchViewController: NSViewController, PlayerViewDelegate, NSTableVi
 
                 self.relatedVideos = d.relatedVideos
                 self.relatedContinuation = d.relatedContinuation
-                self.setLoadMoreRelatedVisible(d.relatedContinuation != nil && self.activeSideTab == .upNext)
+                self.setLoadMoreRelatedVisible(false)
                 self.reloadSideTable()
+                self.relatedLoader.check()
                 self.updateActionButtons()
                 if let resolved = self.currentVideo {
                     self.navDelegate?.updateCurrentVideoMetadata(video: resolved)
@@ -852,14 +869,15 @@ final class WatchViewController: NSViewController, PlayerViewDelegate, NSTableVi
                 let count = self.details?.commentCountText ?? ""
                 self.commentsHeaderLabel.stringValue = count.isEmpty ? "Could not load comments." : "\(count) Comments · Could not load more"
                 self.loadMoreCommentsBtn.title = "Try Again"
+                self.commentsLoader.pause()
                 self.setLoadMoreCommentsVisible(true)
                 postAccessibilityAnnouncement("Could not load comments")
             case .success(let (newComments, nextTok)):
                 if replace { self.comments = newComments }
                 else { self.comments.append(contentsOf: newComments) }
                 self.commentsContinuation = nextTok
-                self.loadMoreCommentsBtn.title = "Load more comments"
-                self.setLoadMoreCommentsVisible(nextTok != nil)
+                self.commentsLoader.resume()
+                self.setLoadMoreCommentsVisible(false)
                 if let total = self.details?.commentCountText, !total.isEmpty {
                     self.commentsHeaderLabel.stringValue = "\(total) Comments"
                 } else {
@@ -871,6 +889,7 @@ final class WatchViewController: NSViewController, PlayerViewDelegate, NSTableVi
                     self.commentsHeaderLabel.stringValue = "No comments to show"
                 }
                 self.rebuildCommentsStack()
+                self.commentsLoader.check()
             }
         }
     }
@@ -901,7 +920,9 @@ final class WatchViewController: NSViewController, PlayerViewDelegate, NSTableVi
         }
     }
 
+    /// The fallback control, shown only after an automatic load failed.
     @objc private func loadMoreComments() {
+        commentsLoader.resume()
         if let tok = commentsContinuation { loadComments(token: tok, replace: false) }
     }
 
@@ -1315,6 +1336,12 @@ final class WatchViewController: NSViewController, PlayerViewDelegate, NSTableVi
         updateActionButtons()
     }
 
+    /// The fallback control, shown only after an automatic load failed.
+    @objc private func loadMoreRelatedButtonClicked() {
+        relatedLoader.resume()
+        loadMoreRelated()
+    }
+
     @objc private func loadMoreRelated() {
         guard let tok = relatedContinuation else { return }
         let gen = loadGeneration
@@ -1323,18 +1350,21 @@ final class WatchViewController: NSViewController, PlayerViewDelegate, NSTableVi
         loadMoreRelatedBtn.isEnabled = false
         YouTubeAPI.shared.fetchRelatedContinuation(token: tok) { [weak self] res in
             guard let self = self, self.loadGeneration == gen else { return }
-            self.loadMoreRelatedBtn.title = "Show more related"
+            self.loadMoreRelatedBtn.title = "Try again"
             self.loadMoreRelatedBtn.isEnabled = true
             switch res {
             case .failure:
                 self.relatedContinuation = tok
+                self.relatedLoader.pause()
                 self.setLoadMoreRelatedVisible(self.activeSideTab == .upNext)
             case .success(let (more, nextTok)):
                 let existing = Set(self.relatedVideos.map(\.id))
                 self.relatedVideos.append(contentsOf: more.filter { !existing.contains($0.id) })
                 self.relatedContinuation = nextTok
-                self.setLoadMoreRelatedVisible(nextTok != nil && self.activeSideTab == .upNext)
+                self.relatedLoader.resume()
+                self.setLoadMoreRelatedVisible(false)
                 if self.activeSideTab == .upNext { self.reloadSideTable() }
+                self.relatedLoader.check()
             }
         }
     }
