@@ -12,6 +12,72 @@ protocol PlayerViewDelegate: AnyObject {
     func playerDidUpdateTime(_ playerView: PlayerView, currentTime: Double, duration: Double)
     func playerDidSelectChapterList(_ playerView: PlayerView)
     func playerDidFinishVideo(_ playerView: PlayerView)
+    func playerDidLoadCaptions(_ playerView: PlayerView)
+    func playerView(_ playerView: PlayerView, didResolveVideoMetadata video: VideoItem)
+}
+
+extension PlayerViewDelegate {
+    func playerDidLoadCaptions(_ playerView: PlayerView) {}
+    func playerView(_ playerView: PlayerView, didResolveVideoMetadata video: VideoItem) {}
+}
+
+final class YouTubeVolumeSliderCell: NSSliderCell {
+    override func barRect(flipped: Bool) -> NSRect {
+        let base = super.barRect(flipped: flipped)
+        return NSRect(x: base.minX + 5.5, y: base.midY - 1.75, width: max(8, base.width - 11), height: 3.5)
+    }
+
+    override func knobRect(flipped: Bool) -> NSRect {
+        let bar = barRect(flipped: flipped)
+        let range = max(0.0001, maxValue - minValue)
+        let frac = CGFloat(max(0, min(1, (doubleValue - minValue) / range)))
+        let cx = bar.minX + bar.width * frac
+        return NSRect(x: cx - 5.5, y: bar.midY - 5.5, width: 11, height: 11)
+    }
+
+    override func drawBar(inside rect: NSRect, flipped: Bool) {
+        let bar = barRect(flipped: flipped)
+        NSColor.white.withAlphaComponent(0.32).setFill()
+        NSBezierPath(roundedRect: bar, xRadius: 1.75, yRadius: 1.75).fill()
+
+        let range = max(0.0001, maxValue - minValue)
+        let frac = CGFloat(max(0, min(1, (doubleValue - minValue) / range)))
+        let fillRect = NSRect(x: bar.minX, y: bar.minY, width: bar.width * frac, height: bar.height)
+        if fillRect.width > 0 {
+            NSColor.white.setFill()
+            NSBezierPath(roundedRect: fillRect, xRadius: 1.75, yRadius: 1.75).fill()
+        }
+    }
+
+    override func drawKnob(_ knobRect: NSRect) {
+        let r: CGFloat = 5.5
+        let cx = knobRect.midX
+        let cy = knobRect.midY
+        NSColor.white.setFill()
+        NSBezierPath(ovalIn: NSRect(x: cx - r, y: cy - r, width: r * 2, height: r * 2)).fill()
+    }
+}
+
+private final class VideoClickHostView: NSView {
+    var onSingleClick: (() -> Void)?
+    var onDoubleClick: (() -> Void)?
+    private var pendingSingleWork: DispatchWorkItem?
+
+    override func mouseUp(with event: NSEvent) {
+        if event.clickCount >= 2 {
+            pendingSingleWork?.cancel()
+            pendingSingleWork = nil
+            onDoubleClick?()
+        } else if event.clickCount == 1 {
+            pendingSingleWork?.cancel()
+            let work = DispatchWorkItem { [weak self] in
+                self?.onSingleClick?()
+            }
+            pendingSingleWork = work
+            let delay = min(0.22, max(0.14, NSEvent.doubleClickInterval * 0.45))
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+        }
+    }
 }
 
 // MARK: - Custom YouTube Timeline Scrubber with Chapters, SponsorBlock & Storyboard Hover
@@ -36,6 +102,68 @@ final class YouTubeScrubberView: NSView {
         wantsLayer = true
     }
     required init?(coder: NSCoder) { fatalError() }
+
+    override func resetCursorRects() {
+        addCursorRect(bounds, cursor: .pointingHand)
+    }
+
+    override var acceptsFirstResponder: Bool { true }
+
+    override func becomeFirstResponder() -> Bool {
+        needsDisplay = true
+        return super.becomeFirstResponder()
+    }
+
+    override func resignFirstResponder() -> Bool {
+        needsDisplay = true
+        return super.resignFirstResponder()
+    }
+
+    override func keyDown(with event: NSEvent) {
+        if duration > 0 {
+            let step: Double = event.modifierFlags.contains(.shift) ? 10.0 : 5.0
+            if event.keyCode == 123 { // Left arrow
+                let target = max(0, currentTime - step)
+                currentTime = target
+                onSeek?(target)
+                needsDisplay = true
+                return
+            }
+            if event.keyCode == 124 { // Right arrow
+                let target = min(duration, currentTime + step)
+                currentTime = target
+                onSeek?(target)
+                needsDisplay = true
+                return
+            }
+        }
+        super.keyDown(with: event)
+    }
+
+    override func isAccessibilityElement() -> Bool { true }
+    override func accessibilityRole() -> NSAccessibility.Role? { .slider }
+    override func accessibilityLabel() -> String? { "Video timeline" }
+    override func accessibilityMinValue() -> Any? { NSNumber(value: 0) }
+    override func accessibilityMaxValue() -> Any? { NSNumber(value: max(0, duration)) }
+    override func accessibilityValue() -> Any? {
+        "\(Formatters.timeString(currentTime)) of \(Formatters.timeString(duration))"
+    }
+    override func accessibilityPerformIncrement() -> Bool {
+        guard duration > 0 else { return false }
+        let step = max(5.0, duration * 0.02)
+        let target = min(duration, currentTime + step)
+        currentTime = target
+        onSeek?(target)
+        return true
+    }
+    override func accessibilityPerformDecrement() -> Bool {
+        guard duration > 0 else { return false }
+        let step = max(5.0, duration * 0.02)
+        let target = max(0, currentTime - step)
+        currentTime = target
+        onSeek?(target)
+        return true
+    }
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
@@ -145,7 +273,7 @@ final class YouTubeScrubberView: NSView {
 
         // Chapter notch dividers
         if chapters.count > 1 {
-            NSColor.black.withAlphaComponent(0.85).setFill()
+            YTTheme.playerGradientTop.setFill()
             for ch in chapters.dropFirst() {
                 let cx = CGFloat(max(0, min(1, ch.startSeconds / duration))) * w
                 NSRect(x: cx - 1, y: barY, width: 2, height: barH).fill()
@@ -159,50 +287,74 @@ final class YouTubeScrubberView: NSView {
             YTTheme.red.setFill()
             NSBezierPath(ovalIn: NSRect(x: tx - r, y: bounds.midY - r, width: r * 2, height: r * 2)).fill()
         }
+
+        if window?.firstResponder === self {
+            YTTheme.linkBlue.withAlphaComponent(0.9).setStroke()
+            let ring = NSBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 1), xRadius: 4, yRadius: 4)
+            ring.lineWidth = 1.5
+            ring.stroke()
+        }
     }
 }
 
 // MARK: - Main Authentic YouTube Player View
 
 final class PlayerView: NSView, AVPictureInPictureControllerDelegate {
+    static let playbackSpeeds: [Float] = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0]
+
+    /// False when the watch page stacks vertically, where theater mode has no effect.
+    var theaterSupported = true {
+        didSet { if oldValue != theaterSupported { updateResponsiveControls() } }
+    }
     weak var delegate: PlayerViewDelegate?
+    var onPlayStateChanged: ((Bool) -> Void)?
+    var onMiniDoubleClick: (() -> Void)?
 
     let player = AVPlayer()
     private let playerLayer = AVPlayerLayer()
-    private let videoHostView = NSView()
+    private let videoHostView = VideoClickHostView()
     private let audioOnlyOverlay = NSView()
     private let audioOnlyThumb = NSImageView()
     private let audioOnlyLabel = makeLabel("Audio-Only Mode (Ultra-Low RAM)", size: 14, weight: .semibold, color: .white)
 
-    private let loadingSpinner = NSProgressIndicator()
+    private let loadingSpinner: NSProgressIndicator = {
+        let s = NSProgressIndicator()
+        s.setAccessibilityLabel("Loading video")
+        return s
+    }()
     private let errorLabel = makeLabel("", size: 14, weight: .medium, color: .white, maxLines: 3)
 
     // Bottom chrome
     private let controlsContainer = NSView()
+    private var controlsHeightConstraint: NSLayoutConstraint!
     private let gradientLayer = CAGradientLayer()
     private let scrubber = YouTubeScrubberView()
-    private let playPauseBtn = makeSymbolButton("play.fill", size: 16, color: .white, tooltip: "Play / Pause (k)")
-    private let nextBtn = makeSymbolButton("forward.end.fill", size: 14, color: .white, tooltip: "Next (Shift+N)")
-    private let muteBtn = makeSymbolButton("speaker.wave.2.fill", size: 15, color: .white, tooltip: "Mute (m)")
+    private let playPauseBtn = makeSymbolButton("play.fill", size: 16, color: .white, tooltip: "Play / Pause (k)", hoverBg: NSColor.white.withAlphaComponent(0.16))
+    private let nextBtn = makeSymbolButton("forward.end.fill", size: 14, color: .white, tooltip: "Next (Shift+N)", hoverBg: NSColor.white.withAlphaComponent(0.16))
+    private let muteBtn = makeSymbolButton("speaker.wave.2.fill", size: 16, color: .white, tooltip: "Mute (m)", hoverBg: NSColor.white.withAlphaComponent(0.16))
     private let volumeSlider = NSSlider()
     private let timeLabel = makeLabel("0:00 / 0:00", size: 12, weight: .medium, color: .white)
     private let chapterPillBtn = NSButton()
-    private let autoplayBtn = makeSymbolButton("play.circle.fill", size: 15, color: .white, tooltip: "Autoplay next")
-    private let ccBtn = makeSymbolButton("captions.bubble", size: 15, color: .white, tooltip: "Subtitles/CC (c)")
-    private let settingsBtn = makeSymbolButton("gearshape.fill", size: 15, color: .white, tooltip: "Settings (Quality, Speed, Audio-Only)")
-    private let miniBtn = makeSymbolButton("pip.enter", size: 15, color: .white, tooltip: "Miniplayer (i)")
-    private let theaterBtn = makeSymbolButton("rectangle.inset.filled", size: 15, color: .white, tooltip: "Theater mode (t)")
-    private let pipBtn = makeSymbolButton("rectangle.on.rectangle", size: 15, color: .white, tooltip: "Picture in Picture")
-    private let fullscreenBtn = makeSymbolButton("arrow.up.left.and.arrow.down.right", size: 15, color: .white, tooltip: "Fullscreen (f)")
+    private let autoplayBtn = makeSymbolButton("play.circle.fill", size: 16, color: .white, tooltip: "Autoplay next", hoverBg: NSColor.white.withAlphaComponent(0.16))
+    private let ccBtn = makeSymbolButton("captions.bubble", size: 16, color: .white, tooltip: "Subtitles/CC (c)", hoverBg: NSColor.white.withAlphaComponent(0.16))
+    private let settingsBtn = makeSymbolButton("gearshape.fill", size: 16, color: .white, tooltip: "Settings (Quality, Speed, Audio-Only)", hoverBg: NSColor.white.withAlphaComponent(0.16))
+    private let miniBtn = makeSymbolButton("pip.enter", size: 16, color: .white, tooltip: "Miniplayer (i)", hoverBg: NSColor.white.withAlphaComponent(0.16))
+    private let theaterBtn = makeSymbolButton("rectangle.inset.filled", size: 16, color: .white, tooltip: "Theater mode (t)", hoverBg: NSColor.white.withAlphaComponent(0.16))
+    private let pipBtn = makeSymbolButton("rectangle.on.rectangle", size: 16, color: .white, tooltip: "Picture in Picture", hoverBg: NSColor.white.withAlphaComponent(0.16))
+    private let fullscreenBtn = makeSymbolButton("arrow.up.left.and.arrow.down.right", size: 16, color: .white, tooltip: "Fullscreen (f)", hoverBg: NSColor.white.withAlphaComponent(0.16))
 
     // Overlays: Captions, Storyboard Hover Preview, SponsorBlock Toast, Center Flash HUD, Stats for Nerds
     private let captionBox = NSView()
-    private let captionLabel = makeLabel("", size: 17, weight: .medium, color: .white, maxLines: 3)
+    private let captionLabel = makeLabel("", size: 16, weight: .medium, color: .white, maxLines: 3)
 
     private let previewPopup = NSView()
     private let previewImage = NSImageView()
+    private var previewImageHeightConstraint: NSLayoutConstraint!
     private let previewTimeLabel = makeLabel("", size: 11, weight: .semibold, color: .white)
     private let previewChapterLabel = makeLabel("", size: 11, weight: .medium, color: .white, maxLines: 1)
+
+    private static weak var activeRemoteOwner: PlayerView?
+    private static var remoteHandlersInstalled = false
 
     private let toastView = NSView()
     private let toastLabel = makeLabel("", size: 12, weight: .semibold, color: .white)
@@ -245,6 +397,14 @@ final class PlayerView: NSView, AVPictureInPictureControllerDelegate {
     private var lastVolume: Float = LocalStore.shared.settings.defaultVolume
     private var tracking: NSTrackingArea?
     private var isMiniMode: Bool = false
+    private var isShortsMode: Bool = false
+    private var isSettingsMenuOpen: Bool = false
+    private var videoLoadGeneration: Int = 0
+    private var streamGeneration: Int = 0
+    private var activeHLSSessionId: String?
+    private var activeProgSessionId: String?
+    private var hoverCropIndex: Int = -1
+    private var hudToken = UUID()
     private var pendingSeekSeconds: Double?
 
     var currentTime: Double {
@@ -262,13 +422,19 @@ final class PlayerView: NSView, AVPictureInPictureControllerDelegate {
         setupUI()
         setupPlayerObservers()
         setupRemoteCommands()
+        NotificationCenter.default.addObserver(self, selector: #selector(onStoreChanged), name: .liteTubeStoreDidChange, object: nil)
     }
     required init?(coder: NSCoder) { fatalError() }
 
     deinit {
+        NotificationCenter.default.removeObserver(self)
         if let obs = timeObserver { player.removeTimeObserver(obs) }
         if let endObs = itemEndObserver { NotificationCenter.default.removeObserver(endObs) }
         itemStatusObs?.invalidate()
+    }
+
+    @objc private func onStoreChanged() {
+        updateAutoplayIcon()
     }
 
     private func setupUI() {
@@ -286,7 +452,7 @@ final class PlayerView: NSView, AVPictureInPictureControllerDelegate {
 
         // Audio-only overlay
         audioOnlyOverlay.wantsLayer = true
-        audioOnlyOverlay.layer?.backgroundColor = NSColor(hex: 0x111111).cgColor
+        audioOnlyOverlay.layer?.backgroundColor = YTTheme.playerOverlayBg.cgColor
         audioOnlyOverlay.isHidden = true
         audioOnlyOverlay.translatesAutoresizingMaskIntoConstraints = false
         addSubview(audioOnlyOverlay)
@@ -312,7 +478,7 @@ final class PlayerView: NSView, AVPictureInPictureControllerDelegate {
 
         // Captions box
         captionBox.wantsLayer = true
-        captionBox.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.78).cgColor
+        captionBox.layer?.backgroundColor = YTTheme.playerCaptionBg.cgColor
         captionBox.layer?.cornerRadius = 6
         captionBox.isHidden = true
         captionBox.translatesAutoresizingMaskIntoConstraints = false
@@ -325,7 +491,7 @@ final class PlayerView: NSView, AVPictureInPictureControllerDelegate {
         controlsContainer.translatesAutoresizingMaskIntoConstraints = false
         addSubview(controlsContainer)
 
-        gradientLayer.colors = [NSColor.clear.cgColor, NSColor.black.withAlphaComponent(0.85).cgColor]
+        gradientLayer.colors = [NSColor.clear.cgColor, YTTheme.playerGradientTop.cgColor]
         gradientLayer.startPoint = CGPoint(x: 0.5, y: 1.0)
         gradientLayer.endPoint = CGPoint(x: 0.5, y: 0.0)
         controlsContainer.layer?.addSublayer(gradientLayer)
@@ -340,9 +506,11 @@ final class PlayerView: NSView, AVPictureInPictureControllerDelegate {
         nextBtn.target = self; nextBtn.action = #selector(nextClicked)
         muteBtn.target = self; muteBtn.action = #selector(toggleMute)
 
+        volumeSlider.cell = YouTubeVolumeSliderCell()
         volumeSlider.minValue = 0; volumeSlider.maxValue = 1
         volumeSlider.floatValue = lastVolume
         volumeSlider.controlSize = .mini
+        volumeSlider.setAccessibilityLabel("Volume")
         volumeSlider.target = self; volumeSlider.action = #selector(volumeChanged)
         volumeSlider.translatesAutoresizingMaskIntoConstraints = false
         player.volume = lastVolume
@@ -351,7 +519,9 @@ final class PlayerView: NSView, AVPictureInPictureControllerDelegate {
 
         chapterPillBtn.isBordered = false
         chapterPillBtn.font = .systemFont(ofSize: 12, weight: .medium)
-        chapterPillBtn.contentTintColor = NSColor.white.withAlphaComponent(0.9)
+        chapterPillBtn.lineBreakMode = .byTruncatingTail
+        chapterPillBtn.setAccessibilityLabel("View chapters")
+        chapterPillBtn.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         chapterPillBtn.target = self; chapterPillBtn.action = #selector(chapterPillClicked)
         chapterPillBtn.isHidden = true
         chapterPillBtn.translatesAutoresizingMaskIntoConstraints = false
@@ -370,22 +540,30 @@ final class PlayerView: NSView, AVPictureInPictureControllerDelegate {
 
         let leftStack = NSStackView(views: [playPauseBtn, nextBtn, muteBtn, volumeSlider, timeLabel, chapterPillBtn])
         leftStack.orientation = .horizontal
-        leftStack.spacing = 10
+        leftStack.spacing = 6
         leftStack.alignment = .centerY
         leftStack.translatesAutoresizingMaskIntoConstraints = false
 
         let rightStack = NSStackView(views: [autoplayBtn, ccBtn, settingsBtn, miniBtn, theaterBtn, pipBtn, fullscreenBtn])
         rightStack.orientation = .horizontal
-        rightStack.spacing = 12
+        rightStack.spacing = 6
         rightStack.alignment = .centerY
         rightStack.translatesAutoresizingMaskIntoConstraints = false
+
+        for symBtn in [playPauseBtn, nextBtn, muteBtn, autoplayBtn, ccBtn, settingsBtn, miniBtn, theaterBtn, pipBtn, fullscreenBtn] {
+            NSLayoutConstraint.activate([
+                symBtn.widthAnchor.constraint(equalToConstant: 28),
+                symBtn.heightAnchor.constraint(equalToConstant: 28)
+            ])
+        }
+        chapterPillBtn.widthAnchor.constraint(lessThanOrEqualToConstant: 150).isActive = true
 
         controlsContainer.addSubview(leftStack)
         controlsContainer.addSubview(rightStack)
 
         // Storyboard preview popup
         previewPopup.wantsLayer = true
-        previewPopup.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.9).cgColor
+        previewPopup.layer?.backgroundColor = YTTheme.playerScrim.cgColor
         previewPopup.layer?.cornerRadius = 6
         previewPopup.layer?.borderColor = NSColor.white.withAlphaComponent(0.25).cgColor
         previewPopup.layer?.borderWidth = 1
@@ -405,7 +583,7 @@ final class PlayerView: NSView, AVPictureInPictureControllerDelegate {
 
         // SponsorBlock skip toast
         toastView.wantsLayer = true
-        toastView.layer?.backgroundColor = NSColor(hex: 0x1E1E1E, alpha: 0.92).cgColor
+        toastView.layer?.backgroundColor = YTTheme.playerToastBg.cgColor
         toastView.layer?.cornerRadius = 8
         toastView.layer?.borderColor = YTTheme.greenGood.withAlphaComponent(0.7).cgColor
         toastView.layer?.borderWidth = 1
@@ -413,10 +591,16 @@ final class PlayerView: NSView, AVPictureInPictureControllerDelegate {
         toastView.translatesAutoresizingMaskIntoConstraints = false
         addSubview(toastView)
 
-        toastUndoBtn.title = "Un-skip"
+        toastUndoBtn.title = ""
         toastUndoBtn.isBordered = false
-        toastUndoBtn.font = .systemFont(ofSize: 12, weight: .semibold)
-        toastUndoBtn.contentTintColor = YTTheme.linkBlue
+        toastUndoBtn.attributedTitle = NSAttributedString(
+            string: "Un-skip",
+            attributes: [
+                .foregroundColor: YTTheme.playerToastLink,
+                .font: NSFont.systemFont(ofSize: 12, weight: .semibold)
+            ]
+        )
+        toastUndoBtn.setAccessibilityLabel("Undo SponsorBlock skip")
         toastUndoBtn.target = self; toastUndoBtn.action = #selector(unskipSponsor)
         toastUndoBtn.translatesAutoresizingMaskIntoConstraints = false
         toastView.addSubview(toastLabel)
@@ -424,7 +608,7 @@ final class PlayerView: NSView, AVPictureInPictureControllerDelegate {
 
         // Center HUD flash badge
         hudBadge.wantsLayer = true
-        hudBadge.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.72).cgColor
+        hudBadge.layer?.backgroundColor = YTTheme.playerBadgeBg.cgColor
         hudBadge.layer?.cornerRadius = 24
         hudBadge.isHidden = true
         hudBadge.translatesAutoresizingMaskIntoConstraints = false
@@ -433,13 +617,15 @@ final class PlayerView: NSView, AVPictureInPictureControllerDelegate {
 
         // Stats for Nerds HUD
         statsBox.wantsLayer = true
-        statsBox.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.78).cgColor
+        statsBox.layer?.backgroundColor = YTTheme.playerCaptionBg.cgColor
         statsBox.layer?.cornerRadius = 8
         statsBox.isHidden = true
         statsBox.translatesAutoresizingMaskIntoConstraints = false
         statsLabel.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
         addSubview(statsBox)
         statsBox.addSubview(statsLabel)
+
+        controlsHeightConstraint = controlsContainer.heightAnchor.constraint(equalToConstant: 74)
 
         NSLayoutConstraint.activate([
             videoHostView.topAnchor.constraint(equalTo: topAnchor),
@@ -468,7 +654,7 @@ final class PlayerView: NSView, AVPictureInPictureControllerDelegate {
             controlsContainer.leadingAnchor.constraint(equalTo: leadingAnchor),
             controlsContainer.trailingAnchor.constraint(equalTo: trailingAnchor),
             controlsContainer.bottomAnchor.constraint(equalTo: bottomAnchor),
-            controlsContainer.heightAnchor.constraint(equalToConstant: 74),
+            controlsHeightConstraint,
 
             scrubber.leadingAnchor.constraint(equalTo: controlsContainer.leadingAnchor, constant: 12),
             scrubber.trailingAnchor.constraint(equalTo: controlsContainer.trailingAnchor, constant: -12),
@@ -517,7 +703,11 @@ final class PlayerView: NSView, AVPictureInPictureControllerDelegate {
             previewImage.topAnchor.constraint(equalTo: previewPopup.topAnchor, constant: 4),
             previewImage.leadingAnchor.constraint(equalTo: previewPopup.leadingAnchor, constant: 4),
             previewImage.trailingAnchor.constraint(equalTo: previewPopup.trailingAnchor, constant: -4),
-            previewImage.heightAnchor.constraint(equalToConstant: 90),
+            {
+                let c = previewImage.heightAnchor.constraint(equalToConstant: 90)
+                previewImageHeightConstraint = c
+                return c
+            }(),
             previewChapterLabel.topAnchor.constraint(equalTo: previewImage.bottomAnchor, constant: 3),
             previewChapterLabel.leadingAnchor.constraint(equalTo: previewPopup.leadingAnchor, constant: 4),
             previewChapterLabel.trailingAnchor.constraint(equalTo: previewPopup.trailingAnchor, constant: -4),
@@ -526,12 +716,16 @@ final class PlayerView: NSView, AVPictureInPictureControllerDelegate {
             previewTimeLabel.bottomAnchor.constraint(equalTo: previewPopup.bottomAnchor, constant: -4)
         ])
 
-        // Double-click to fullscreen, single-click to play/pause
-        let click = NSClickGestureRecognizer(target: self, action: #selector(handleVideoClick))
-        videoHostView.addGestureRecognizer(click)
-        let dbl = NSClickGestureRecognizer(target: self, action: #selector(fullscreenClicked))
-        dbl.numberOfClicksRequired = 2
-        videoHostView.addGestureRecognizer(dbl)
+        // Double-click to fullscreen (or expand miniplayer), single-click to play/pause
+        videoHostView.onSingleClick = { [weak self] in self?.togglePlayPause() }
+        videoHostView.onDoubleClick = { [weak self] in
+            guard let self = self else { return }
+            if self.isMiniMode {
+                self.onMiniDoubleClick?()
+            } else {
+                self.fullscreenClicked()
+            }
+        }
 
         if AVPictureInPictureController.isPictureInPictureSupported() {
             pipController = AVPictureInPictureController(playerLayer: playerLayer)
@@ -548,6 +742,7 @@ final class PlayerView: NSView, AVPictureInPictureControllerDelegate {
         playerLayer.frame = videoHostView.bounds
         gradientLayer.frame = controlsContainer.bounds
         CATransaction.commit()
+        updateResponsiveControls()
     }
 
     override func updateTrackingAreas() {
@@ -560,23 +755,70 @@ final class PlayerView: NSView, AVPictureInPictureControllerDelegate {
     override func mouseMoved(with event: NSEvent) { showControlsTemporarily() }
     override func mouseEntered(with event: NSEvent) { showControlsTemporarily() }
     override func mouseExited(with event: NSEvent) {
+        previewPopup.isHidden = true
         if isPlaying { scheduleHideControls(delay: 0.8) }
     }
 
-    func setMiniMode(_ mini: Bool) {
+    func setMiniMode(_ mini: Bool, isShorts: Bool = false) {
         isMiniMode = mini
-        theaterBtn.isHidden = mini
-        pipBtn.isHidden = mini || pipController == nil
-        chapterPillBtn.isHidden = mini || chapters.isEmpty
-        autoplayBtn.isHidden = mini
-        volumeSlider.isHidden = mini
+        isShortsMode = isShorts
+        controlsHeightConstraint.constant = (mini && isShorts) ? 58 : (mini ? 56 : 74)
+        updateResponsiveControls()
+    }
+
+    private func updateResponsiveControls() {
+        if isMiniMode {
+            playPauseBtn.isHidden = !isShortsMode
+            theaterBtn.isHidden = true
+            pipBtn.isHidden = true
+            chapterPillBtn.isHidden = true
+            autoplayBtn.isHidden = true
+            volumeSlider.isHidden = true
+            miniBtn.isHidden = true
+            fullscreenBtn.isHidden = true
+            ccBtn.isHidden = !isShortsMode
+            settingsBtn.isHidden = !isShortsMode
+            nextBtn.isHidden = true
+            return
+        }
+        let w = bounds.width
+        let compact = w > 0 && w < 480
+        let ultraNarrow = w > 0 && w < 400
+        playPauseBtn.isHidden = false
+        miniBtn.isHidden = false
+        fullscreenBtn.isHidden = false
+        ccBtn.isHidden = false
+        settingsBtn.isHidden = false
+        nextBtn.isHidden = ultraNarrow
+        theaterBtn.isHidden = compact || !theaterSupported
+        volumeSlider.isHidden = (w > 0 && w < 560)
+        autoplayBtn.isHidden = (w > 0 && w < 600)
+        pipBtn.isHidden = (w > 0 && w < 600) || pipController == nil
+        chapterPillBtn.isHidden = (w > 0 && w < 680) || chapters.isEmpty
     }
 
     // MARK: - Loading a Video
 
     func loadVideo(_ video: VideoItem, startSeconds: Double? = nil) {
+        PlayerView.activeRemoteOwner = self
+        videoLoadGeneration += 1
+        streamGeneration += 1
+        let vGen = videoLoadGeneration
         currentVideo = video
         currentPlayerResponse = nil
+        // Re-read defaults per video so changes made in Settings apply to the next video without a relaunch.
+        let defaults = LocalStore.shared.settings
+        selectedQuality = defaults.preferredQuality
+        playbackRate = defaults.defaultSpeed
+        isCaptionsOn = defaults.showCaptionsByDefault
+        lastVolume = defaults.defaultVolume
+        player.volume = defaults.defaultVolume
+        player.isMuted = false
+        updateMuteIcon()
+        volumeSlider.floatValue = defaults.defaultVolume
+        updateCCIcon()
+        isAudioOnly = (selectedQuality == "Audio Only")
+        audioOnlyOverlay.isHidden = !isAudioOnly
         activeVideoFormat = nil
         activeAudioFormat = nil
         captionTracks = []
@@ -585,32 +827,63 @@ final class PlayerView: NSView, AVPictureInPictureControllerDelegate {
         chapters = []
         sponsorSegments = []
         skippedSegmentIds.removeAll()
+        lastSkippedStart = nil
+        isLooping = false
         storyboard = nil
         scrubber.chapters = []
         scrubber.sponsorSegments = []
         scrubber.currentTime = 0
         scrubber.bufferedTime = 0
         scrubber.duration = 0
+        timeLabel.stringValue = "0:00 / 0:00"
+        chapterPillBtn.isHidden = true
+        audioOnlyThumb.image = nil
+        previewPopup.isHidden = true
+        toastView.isHidden = true
+        toastWork?.cancel()
+        hudBadge.isHidden = true
+        hudWork?.cancel()
         captionBox.isHidden = true
         errorLabel.isHidden = true
         pendingSeekSeconds = startSeconds ?? LocalStore.shared.savedPosition(for: video.id)
+        updatePlayPauseIcon()
 
         player.replaceCurrentItem(with: nil)
         loadingSpinner.startAnimation(nil)
 
         ImageCache.shared.load(video.bestThumbnailURL, maxPixelSize: 480) { [weak self] img in
-            self?.audioOnlyThumb.image = img
+            guard let self = self, self.videoLoadGeneration == vGen else { return }
+            self.audioOnlyThumb.image = img
         }
 
         // Fetch streams via IOS Innertube
         YouTubeAPI.shared.fetchPlayer(videoId: video.id) { [weak self] res in
-            guard let self = self, self.currentVideo?.id == video.id else { return }
+            guard let self = self, self.videoLoadGeneration == vGen, self.currentVideo?.id == video.id else { return }
             switch res {
-            case .failure(let err):
+            case .failure:
                 self.loadingSpinner.stopAnimation(nil)
-                self.showError("Failed to load stream: \(err.localizedDescription)")
+                self.showError("This video could not be played. Check your connection, then choose it again.")
             case .success(let resp):
                 self.currentPlayerResponse = resp
+                if var cur = self.currentVideo {
+                    var changed = false
+                    if (cur.title.isEmpty || cur.title == "Loading...") && !resp.title.isEmpty {
+                        cur.title = resp.title
+                        changed = true
+                    }
+                    if cur.channelName.isEmpty && !resp.author.isEmpty {
+                        cur.channelName = resp.author
+                        changed = true
+                    }
+                    if cur.channelId.isEmpty && !resp.channelId.isEmpty {
+                        cur.channelId = resp.channelId
+                        changed = true
+                    }
+                    if changed {
+                        self.currentVideo = cur
+                        self.delegate?.playerView(self, didResolveVideoMetadata: cur)
+                    }
+                }
                 if let errMsg = resp.playabilityError, resp.videoFormats.isEmpty && resp.hlsManifestURL == nil {
                     self.loadingSpinner.stopAnimation(nil)
                     self.showError(errMsg)
@@ -633,7 +906,7 @@ final class PlayerView: NSView, AVPictureInPictureControllerDelegate {
         // Fetch SponsorBlock segments in parallel
         if LocalStore.shared.settings.sponsorBlockEnabled {
             YouTubeAPI.shared.fetchSponsorSegments(videoId: video.id) { [weak self] segs in
-                guard let self = self, self.currentVideo?.id == video.id else { return }
+                guard let self = self, self.videoLoadGeneration == vGen, self.currentVideo?.id == video.id else { return }
                 self.sponsorSegments = segs
                 self.scrubber.sponsorSegments = segs
             }
@@ -647,23 +920,28 @@ final class PlayerView: NSView, AVPictureInPictureControllerDelegate {
     }
 
     func loadCaptionTrack(_ track: CaptionTrack, completion: (([CaptionCue]) -> Void)? = nil) {
+        let vGen = videoLoadGeneration
         selectedCaptionTrack = track
         YouTubeAPI.shared.fetchCaptions(track: track) { [weak self] cues in
-            guard let self = self else { return }
+            guard let self = self, self.videoLoadGeneration == vGen else { return }
             self.captionCues = cues
+            self.delegate?.playerDidLoadCaptions(self)
             completion?(cues)
         }
     }
 
     /// Starts playback using our zero-copy in-process HLS v7 bridge.
-    func startSelectedQuality(seekTo resumeTime: Double? = nil) {
+    func startSelectedQuality(seekTo resumeTime: Double? = nil, autoPlay: Bool = true) {
         guard let resp = currentPlayerResponse else { return }
+        PlayerView.activeRemoteOwner = self
+        streamGeneration += 1
+        let gen = streamGeneration
         loadingSpinner.startAnimation(nil)
         errorLabel.isHidden = true
 
         // 1. Live stream → direct HLS URL
         if resp.isLive, let hls = resp.hlsManifestURL, let url = URL(string: hls) {
-            attachPlayerURL(url, seekTo: nil)
+            attachPlayerURL(url, seekTo: nil, autoPlay: autoPlay)
             return
         }
 
@@ -679,22 +957,29 @@ final class PlayerView: NSView, AVPictureInPictureControllerDelegate {
             activeAudioFormat = chosenAudio
             if let aud = chosenAudio {
                 LocalHLSServer.shared.probeAdaptiveUnrestricted(format: aud) { [weak self] ok in
-                    guard let self = self else { return }
+                    guard let self = self, self.streamGeneration == gen else { return }
                     if ok {
-                        LocalHLSServer.shared.prepareSession(videoFormats: [], audioFormat: aud) { [weak self] res in
-                            guard let self = self else { return }
-                            if case .success(let (_, masterURL)) = res {
-                                self.attachPlayerURL(masterURL, seekTo: resumeTime)
+                        LocalHLSServer.shared.prepareSession(videoFormats: [], audioFormat: aud, previousSessionId: self.activeHLSSessionId) { [weak self] res in
+                            guard let self = self, self.streamGeneration == gen else { return }
+                            if case .success(let (sid, masterURL)) = res {
+                                self.activeHLSSessionId = sid
+                                self.attachPlayerURL(masterURL, seekTo: resumeTime, autoPlay: autoPlay)
                             } else if let prog = resp.progressiveFormats.first {
-                                let pURL = LocalHLSServer.shared.prepareProgressiveSession(format: prog)
-                                self.attachPlayerURL(pURL, seekTo: resumeTime, disableVideoTrack: true)
+                                let pRes = LocalHLSServer.shared.prepareProgressiveSession(format: prog, previousSessionId: self.activeProgSessionId)
+                                self.activeProgSessionId = pRes.sessionId
+                                self.attachPlayerURL(pRes.url, seekTo: resumeTime, disableVideoTrack: true, autoPlay: autoPlay)
                             }
                         }
                     } else if let prog = resp.progressiveFormats.first {
-                        let pURL = LocalHLSServer.shared.prepareProgressiveSession(format: prog)
-                        DispatchQueue.main.async { self.attachPlayerURL(pURL, seekTo: resumeTime, disableVideoTrack: true) }
+                        let pRes = LocalHLSServer.shared.prepareProgressiveSession(format: prog, previousSessionId: self.activeProgSessionId)
+                        DispatchQueue.main.async {
+                            guard self.streamGeneration == gen else { return }
+                            self.activeProgSessionId = pRes.sessionId
+                            self.attachPlayerURL(pRes.url, seekTo: resumeTime, disableVideoTrack: true, autoPlay: autoPlay)
+                        }
                     } else {
                         DispatchQueue.main.async {
+                            guard self.streamGeneration == gen else { return }
                             self.loadingSpinner.stopAnimation(nil)
                             self.showError("No unrestricted audio stream available.")
                         }
@@ -702,8 +987,9 @@ final class PlayerView: NSView, AVPictureInPictureControllerDelegate {
                 }
                 return
             } else if let prog = resp.progressiveFormats.first {
-                let pURL = LocalHLSServer.shared.prepareProgressiveSession(format: prog)
-                attachPlayerURL(pURL, seekTo: resumeTime, disableVideoTrack: true)
+                let pRes = LocalHLSServer.shared.prepareProgressiveSession(format: prog, previousSessionId: activeProgSessionId)
+                activeProgSessionId = pRes.sessionId
+                attachPlayerURL(pRes.url, seekTo: resumeTime, disableVideoTrack: true, autoPlay: autoPlay)
                 return
             }
         }
@@ -740,38 +1026,43 @@ final class PlayerView: NSView, AVPictureInPictureControllerDelegate {
         // transparently switch to our unrestricted loopback Range-proxied progressive MP4 stream!
         if let probeTarget = selectedVideos.first {
             LocalHLSServer.shared.probeAdaptiveUnrestricted(format: probeTarget) { [weak self] unrestricted in
-                guard let self = self else { return }
+                guard let self = self, self.streamGeneration == gen else { return }
                 if unrestricted {
-                    LocalHLSServer.shared.prepareSession(videoFormats: selectedVideos, audioFormat: chosenAudio) { [weak self] res in
-                        guard let self = self else { return }
+                    LocalHLSServer.shared.prepareSession(videoFormats: selectedVideos, audioFormat: chosenAudio, previousSessionId: self.activeHLSSessionId) { [weak self] res in
+                        guard let self = self, self.streamGeneration == gen else { return }
                         switch res {
                         case .failure:
                             if let prog = resp.progressiveFormats.first {
                                 self.activeVideoFormat = prog
                                 self.activeAudioFormat = prog
-                                let pURL = LocalHLSServer.shared.prepareProgressiveSession(format: prog)
-                                self.attachPlayerURL(pURL, seekTo: resumeTime)
+                                let pRes = LocalHLSServer.shared.prepareProgressiveSession(format: prog, previousSessionId: self.activeProgSessionId)
+                                self.activeProgSessionId = pRes.sessionId
+                                self.attachPlayerURL(pRes.url, seekTo: resumeTime, autoPlay: autoPlay)
                             } else {
                                 self.loadingSpinner.stopAnimation(nil)
                                 self.showError("Failed to prepare stream.")
                             }
-                        case .success(let (_, masterURL)):
-                            self.attachPlayerURL(masterURL, seekTo: resumeTime)
+                        case .success(let (sid, masterURL)):
+                            self.activeHLSSessionId = sid
+                            self.attachPlayerURL(masterURL, seekTo: resumeTime, autoPlay: autoPlay)
                         }
                     }
                 } else if let prog = resp.progressiveFormats.first {
                     DispatchQueue.main.async {
+                        guard self.streamGeneration == gen else { return }
                         self.activeVideoFormat = prog
                         self.activeAudioFormat = prog
-                        let pURL = LocalHLSServer.shared.prepareProgressiveSession(format: prog)
-                        self.attachPlayerURL(pURL, seekTo: resumeTime)
+                        let pRes = LocalHLSServer.shared.prepareProgressiveSession(format: prog, previousSessionId: self.activeProgSessionId)
+                        self.activeProgSessionId = pRes.sessionId
+                        self.attachPlayerURL(pRes.url, seekTo: resumeTime, autoPlay: autoPlay)
                     }
                 } else {
                     // No progressive fallback; still try HLS session
-                    LocalHLSServer.shared.prepareSession(videoFormats: selectedVideos, audioFormat: chosenAudio) { [weak self] res in
-                        guard let self = self else { return }
-                        if case .success(let (_, masterURL)) = res {
-                            self.attachPlayerURL(masterURL, seekTo: resumeTime)
+                    LocalHLSServer.shared.prepareSession(videoFormats: selectedVideos, audioFormat: chosenAudio, previousSessionId: self.activeHLSSessionId) { [weak self] res in
+                        guard let self = self, self.streamGeneration == gen else { return }
+                        if case .success(let (sid, masterURL)) = res {
+                            self.activeHLSSessionId = sid
+                            self.attachPlayerURL(masterURL, seekTo: resumeTime, autoPlay: autoPlay)
                         } else {
                             self.loadingSpinner.stopAnimation(nil)
                             self.showError("Stream restricted by YouTube.")
@@ -785,8 +1076,9 @@ final class PlayerView: NSView, AVPictureInPictureControllerDelegate {
         if let prog = resp.progressiveFormats.first {
             activeVideoFormat = prog
             activeAudioFormat = prog
-            let pURL = LocalHLSServer.shared.prepareProgressiveSession(format: prog)
-            attachPlayerURL(pURL, seekTo: resumeTime)
+            let pRes = LocalHLSServer.shared.prepareProgressiveSession(format: prog, previousSessionId: activeProgSessionId)
+            activeProgSessionId = pRes.sessionId
+            attachPlayerURL(pRes.url, seekTo: resumeTime, autoPlay: autoPlay)
             return
         }
 
@@ -794,7 +1086,8 @@ final class PlayerView: NSView, AVPictureInPictureControllerDelegate {
         showError("No compatible video stream found for this video.")
     }
 
-    private func attachPlayerURL(_ url: URL, seekTo resumeTime: Double?, disableVideoTrack: Bool = false) {
+    private func attachPlayerURL(_ url: URL, seekTo resumeTime: Double?, disableVideoTrack: Bool = false, autoPlay: Bool = true) {
+        let sGen = streamGeneration
         let asset = AVURLAsset(url: url)
         let item = AVPlayerItem(asset: asset)
         // CRITICAL MEMORY CAP: limit forward buffer to 5s (instead of AVPlayer's 60s default!)
@@ -805,7 +1098,7 @@ final class PlayerView: NSView, AVPictureInPictureControllerDelegate {
         itemStatusObs?.invalidate()
         itemStatusObs = item.observe(\.status, options: [.new]) { [weak self] it, _ in
             DispatchQueue.main.async {
-                guard let self = self else { return }
+                guard let self = self, self.streamGeneration == sGen else { return }
                 switch it.status {
                 case .readyToPlay:
                     self.loadingSpinner.stopAnimation(nil)
@@ -814,23 +1107,27 @@ final class PlayerView: NSView, AVPictureInPictureControllerDelegate {
                             tr.isEnabled = false
                         }
                     }
-                    if let t = resumeTime, t > 1 {
+                    if let t = resumeTime, t > 0.25 {
                         self.player.seek(to: CMTime(seconds: t, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
-                            guard let self = self else { return }
-                            self.player.playImmediately(atRate: self.playbackRate)
+                            guard let self = self, self.streamGeneration == sGen else { return }
+                            if autoPlay {
+                                self.player.playImmediately(atRate: self.playbackRate)
+                            }
                             self.updatePlayPauseIcon()
                             self.updateNowPlaying()
                             self.scheduleHideControls()
                         }
                     } else {
-                        self.player.playImmediately(atRate: self.playbackRate)
+                        if autoPlay {
+                            self.player.playImmediately(atRate: self.playbackRate)
+                        }
                         self.updatePlayPauseIcon()
                         self.updateNowPlaying()
                         self.scheduleHideControls()
                     }
                 case .failed:
                     self.loadingSpinner.stopAnimation(nil)
-                    self.showError(it.error?.localizedDescription ?? "Playback failed")
+                    self.showError("Playback failed. Open the video in your browser to watch it.")
                 default: break
                 }
             }
@@ -853,10 +1150,46 @@ final class PlayerView: NSView, AVPictureInPictureControllerDelegate {
         player.volume = volumeSlider.floatValue
     }
 
+    func pausePlayback() {
+        if player.currentItem == nil {
+            videoLoadGeneration += 1
+            streamGeneration += 1
+            loadingSpinner.stopAnimation(nil)
+        }
+        player.pause()
+        updatePlayPauseIcon()
+        showControlsTemporarily(autoHide: false)
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+    }
+
     func stopAndReleaseMemory() {
+        videoLoadGeneration += 1
+        streamGeneration += 1
+        loadingSpinner.stopAnimation(nil)
+        itemStatusObs?.invalidate()
+        itemStatusObs = nil
+        if let endObs = itemEndObserver {
+            NotificationCenter.default.removeObserver(endObs)
+            itemEndObserver = nil
+        }
+        hideControlsWork?.cancel()
+        hudWork?.cancel()
+        toastWork?.cancel()
+        previewPopup.isHidden = true
+        hudBadge.isHidden = true
+        toastView.isHidden = true
+        pendingSeekSeconds = nil
         player.pause()
         player.replaceCurrentItem(with: nil)
-        LocalHLSServer.shared.clearAllSessions()
+        if let sid = activeHLSSessionId {
+            LocalHLSServer.shared.removeSession(id: sid)
+            activeHLSSessionId = nil
+        }
+        if let pid = activeProgSessionId {
+            LocalHLSServer.shared.removeProgressiveSession(id: pid)
+            activeProgSessionId = nil
+        }
+        updatePlayPauseIcon()
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
     }
 
@@ -905,13 +1238,20 @@ final class PlayerView: NSView, AVPictureInPictureControllerDelegate {
     }
 
     private func updateActiveChapterLabel(at time: Double) {
-        guard !chapters.isEmpty, !isMiniMode else {
+        let narrow = bounds.width > 0 && bounds.width < 680
+        guard !chapters.isEmpty, !isMiniMode, !narrow else {
             chapterPillBtn.isHidden = true
             return
         }
         let active = chapters.last(where: { $0.startSeconds <= time + 0.5 }) ?? chapters.first
         if let ch = active {
-            chapterPillBtn.title = "• \(ch.title) ▸"
+            chapterPillBtn.attributedTitle = NSAttributedString(
+                string: "• \(ch.title) ▸",
+                attributes: [
+                    .foregroundColor: YTTheme.playerChapterText,
+                    .font: NSFont.systemFont(ofSize: 12, weight: .medium)
+                ]
+            )
             chapterPillBtn.isHidden = false
         }
     }
@@ -933,25 +1273,36 @@ final class PlayerView: NSView, AVPictureInPictureControllerDelegate {
 
     private func handleScrubHover(time: Double?, x: CGFloat) {
         guard let t = time, !isMiniMode else {
+            hoverCropIndex = -1
             previewPopup.isHidden = true
             return
         }
-        let popupW: CGFloat = 168
-        let popupH: CGFloat = 128
+        let hasThumb = (storyboard != nil)
+        previewImage.isHidden = !hasThumb
+        previewImageHeightConstraint.constant = hasThumb ? 90 : 0
+
+        if let ch = chapters.last(where: { $0.startSeconds <= t }) {
+            previewChapterLabel.stringValue = ch.title
+            previewChapterLabel.isHidden = false
+        } else {
+            previewChapterLabel.stringValue = ""
+            previewChapterLabel.isHidden = true
+        }
+        previewTimeLabel.stringValue = Formatters.timeString(t)
+        previewPopup.layoutSubtreeIfNeeded()
+        let fit = previewPopup.fittingSize
+        let popupW: CGFloat = hasThumb ? 168 : max(72, min(180, ceil(fit.width)))
+        let popupH: CGFloat = max(28, ceil(fit.height))
         let clampedX = max(8, min(bounds.width - popupW - 8, x - popupW / 2))
         let popupY = controlsContainer.frame.maxY + 4
         previewPopup.frame = NSRect(x: clampedX, y: popupY, width: popupW, height: popupH)
-        previewTimeLabel.stringValue = Formatters.timeString(t)
-        if let ch = chapters.last(where: { $0.startSeconds <= t }) {
-            previewChapterLabel.stringValue = ch.title
-        } else {
-            previewChapterLabel.stringValue = ""
-        }
         previewPopup.isHidden = false
 
         // Crop storyboard frame if available
         if let sb = storyboard {
+            let vGen = videoLoadGeneration
             let idx = max(0, min(sb.thumbCount - 1, Int((t * 1000.0) / sb.intervalMs)))
+            hoverCropIndex = idx
             let perSheet = sb.cols * sb.rows
             let sheetIdx = idx / perSheet
             let inSheet = idx % perSheet
@@ -959,33 +1310,32 @@ final class PlayerView: NSView, AVPictureInPictureControllerDelegate {
             let col = inSheet % sb.cols
             let url = sb.urlTemplate.replacingOccurrences(of: "$M", with: "\(sheetIdx)")
             ImageCache.shared.loadStoryboardSheet(url) { [weak self] cg in
-                guard let self = self, let cg = cg else { return }
-                let crop = CGRect(x: col * sb.thumbWidth, y: row * sb.thumbHeight, width: sb.thumbWidth, height: sb.thumbHeight)
-                if let sub = cg.cropping(to: crop) {
-                    self.previewImage.image = NSImage(cgImage: sub, size: NSSize(width: sb.thumbWidth, height: sb.thumbHeight))
-                }
+                guard let self = self, self.videoLoadGeneration == vGen, self.hoverCropIndex == idx, let cg = cg else { return }
+                let rawCrop = CGRect(x: col * sb.thumbWidth, y: row * sb.thumbHeight, width: sb.thumbWidth, height: sb.thumbHeight)
+                let clampedCrop = rawCrop.intersection(CGRect(x: 0, y: 0, width: cg.width, height: cg.height))
+                guard !clampedCrop.isEmpty, let sub = cg.cropping(to: clampedCrop) else { return }
+                self.previewImage.image = NSImage(cgImage: sub, size: NSSize(width: clampedCrop.width, height: clampedCrop.height))
             }
+        } else {
+            hoverCropIndex = -1
         }
     }
 
     // MARK: - Playback Controls & Keyboard Shortcuts
 
     @objc func togglePlayPause() {
+        PlayerView.activeRemoteOwner = self
         if isPlaying {
             player.pause()
-            flashHUD("⏸ Paused")
+            flashHUD("Paused")
             showControlsTemporarily(autoHide: false)
         } else {
             player.playImmediately(atRate: playbackRate)
-            flashHUD("▶ Play")
+            flashHUD("Play")
             scheduleHideControls()
         }
         updatePlayPauseIcon()
         updateNowPlaying()
-    }
-
-    @objc private func handleVideoClick() {
-        togglePlayPause()
     }
 
     func seek(to seconds: Double) {
@@ -997,7 +1347,7 @@ final class PlayerView: NSView, AVPictureInPictureControllerDelegate {
 
     func seekRelative(_ delta: Double) {
         seek(to: currentTime + delta)
-        let arrow = delta >= 0 ? "⏩ +\(Int(delta))s" : "⏪ \(Int(delta))s"
+        let arrow = delta >= 0 ? "+\(Int(delta))s" : "\(Int(delta))s"
         flashHUD(arrow)
     }
 
@@ -1014,11 +1364,11 @@ final class PlayerView: NSView, AVPictureInPictureControllerDelegate {
         volumeSlider.floatValue = next
         if next > 0 { lastVolume = next }
         updateMuteIcon()
-        flashHUD("🔊 \(Int(next * 100))%")
+        flashHUD("Volume \(Int(next * 100))%")
     }
 
     func adjustSpeed(_ delta: Float) {
-        let speeds: [Float] = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0]
+        let speeds = PlayerView.playbackSpeeds
         let curIdx = speeds.firstIndex(where: { abs($0 - playbackRate) < 0.05 }) ?? 3
         let nextIdx = max(0, min(speeds.count - 1, curIdx + (delta > 0 ? 1 : -1)))
         setPlaybackRate(speeds[nextIdx])
@@ -1036,12 +1386,12 @@ final class PlayerView: NSView, AVPictureInPictureControllerDelegate {
             player.isMuted = false
             player.volume = max(0.15, lastVolume)
             volumeSlider.floatValue = player.volume
-            flashHUD("🔊 \(Int(player.volume * 100))%")
+            flashHUD("Volume \(Int(player.volume * 100))%")
         } else {
             lastVolume = player.volume
             player.isMuted = true
             volumeSlider.floatValue = 0
-            flashHUD("🔇 Muted")
+            flashHUD("Muted")
         }
         updateMuteIcon()
     }
@@ -1098,11 +1448,12 @@ final class PlayerView: NSView, AVPictureInPictureControllerDelegate {
         let qMenu = NSMenu()
         var availableQualities: [String] = ["Auto"]
         if let resp = currentPlayerResponse {
-            var seen = Set<Int>()
-            for vf in resp.videoFormats where vf.isMP4 && (vf.isH264 || vf.isAV1) && vf.initRange != nil {
-                if seen.insert(vf.height).inserted {
-                    availableQualities.append("\(vf.height)p")
-                }
+            var heights = Set<Int>()
+            for vf in resp.videoFormats where vf.isMP4 && (vf.isH264 || vf.isAV1) && vf.initRange != nil && vf.height > 0 {
+                heights.insert(vf.height)
+            }
+            for h in heights.sorted(by: >) {
+                availableQualities.append("\(h)p")
             }
         }
         availableQualities.append("Audio Only")
@@ -1120,7 +1471,7 @@ final class PlayerView: NSView, AVPictureInPictureControllerDelegate {
         // 2. Playback Speed submenu
         let sItem = NSMenuItem(title: "Playback Speed (\(String(format: "%g", playbackRate))×)", action: nil, keyEquivalent: "")
         let sMenu = NSMenu()
-        for sp: Float in [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0] {
+        for sp in PlayerView.playbackSpeeds {
             let label = sp == 1.0 ? "Normal (1×)" : "\(String(format: "%g", sp))×"
             let mi = NSMenuItem(title: label, action: #selector(pickSpeed(_:)), keyEquivalent: "")
             mi.target = self
@@ -1172,18 +1523,20 @@ final class PlayerView: NSView, AVPictureInPictureControllerDelegate {
         statsItem.state = showStatsForNerds ? .on : .off
         menu.addItem(statsItem)
 
+        isSettingsMenuOpen = true
+        hideControlsWork?.cancel()
         menu.popUp(positioning: nil, at: NSPoint(x: 0, y: settingsBtn.bounds.height + 6), in: settingsBtn)
+        isSettingsMenuOpen = false
+        if isPlaying { scheduleHideControls() }
     }
 
     @objc private func pickQuality(_ sender: NSMenuItem) {
         guard let q = sender.representedObject as? String else { return }
         let t = currentTime
+        let wasPlaying = isPlaying
         isAudioOnly = (q == "Audio Only")
         selectedQuality = q
-        var s = LocalStore.shared.settings
-        s.preferredQuality = q
-        LocalStore.shared.settings = s
-        startSelectedQuality(seekTo: t)
+        startSelectedQuality(seekTo: t, autoPlay: wasPlaying)
         flashHUD(q)
     }
 
@@ -1207,7 +1560,7 @@ final class PlayerView: NSView, AVPictureInPictureControllerDelegate {
 
     @objc private func toggleLoop() {
         isLooping.toggle()
-        flashHUD(isLooping ? "🔁 Loop On" : "Loop Off")
+        flashHUD(isLooping ? "Loop On" : "Loop Off")
     }
 
     @objc private func toggleSponsorBlock() {
@@ -1244,7 +1597,7 @@ final class PlayerView: NSView, AVPictureInPictureControllerDelegate {
 
     func handleKeyEvent(_ event: NSEvent) -> Bool {
         let flags = event.modifierFlags.intersection([.shift, .command, .option, .control])
-        guard !flags.contains(.command), !flags.contains(.control) else { return false }
+        guard !flags.contains(.command), !flags.contains(.control), !flags.contains(.option) else { return false }
         let chars = event.charactersIgnoringModifiers ?? ""
 
         if flags.contains(.shift) {
@@ -1256,10 +1609,13 @@ final class PlayerView: NSView, AVPictureInPictureControllerDelegate {
 
         switch event.keyCode {
         case 49: togglePlayPause(); return true // Space
-        case 123: seekRelative(-5); return true // Left
-        case 124: seekRelative(5); return true  // Right
+        case 123: seekRelative(event.modifierFlags.contains(.shift) ? -10 : -5); return true // Left (Shift = 10s)
+        case 124: seekRelative(event.modifierFlags.contains(.shift) ? 10 : 5); return true  // Right (Shift = 10s)
         case 126: adjustVolume(0.05); return true // Up
         case 125: adjustVolume(-0.05); return true // Down
+        case 53: // Escape leaves fullscreen, as in every macOS video app
+            guard let win = window, win.styleMask.contains(.fullScreen) else { return false }
+            win.toggleFullScreen(nil); return true
         default: break
         }
 
@@ -1288,61 +1644,100 @@ final class PlayerView: NSView, AVPictureInPictureControllerDelegate {
     // MARK: - Helpers & macOS Now Playing
 
     private func updatePlayPauseIcon() {
-        let sym = isPlaying ? "pause.fill" : "play.fill"
+        let playing = isPlaying
+        let sym = playing ? "pause.fill" : "play.fill"
         let cfg = NSImage.SymbolConfiguration(pointSize: 16, weight: .medium)
-        playPauseBtn.image = NSImage(systemSymbolName: sym, accessibilityDescription: nil)?.withSymbolConfiguration(cfg)
+        playPauseBtn.image = NSImage(systemSymbolName: sym, accessibilityDescription: playing ? "Pause" : "Play")?.withSymbolConfiguration(cfg)
+        playPauseBtn.setAccessibilityLabel(playing ? "Pause" : "Play")
+        onPlayStateChanged?(playing)
     }
 
     private func updateMuteIcon() {
         let sym: String
-        if player.isMuted || player.volume == 0 { sym = "speaker.slash.fill" }
-        else if player.volume < 0.45 { sym = "speaker.wave.1.fill" }
-        else { sym = "speaker.wave.2.fill" }
+        let label: String
+        if player.isMuted || player.volume == 0 {
+            sym = "speaker.slash.fill"
+            label = "Unmute"
+        } else if player.volume < 0.45 {
+            sym = "speaker.wave.1.fill"
+            label = "Mute (low volume)"
+        } else {
+            sym = "speaker.wave.2.fill"
+            label = "Mute"
+        }
         let cfg = NSImage.SymbolConfiguration(pointSize: 15, weight: .medium)
-        muteBtn.image = NSImage(systemSymbolName: sym, accessibilityDescription: nil)?.withSymbolConfiguration(cfg)
+        muteBtn.image = NSImage(systemSymbolName: sym, accessibilityDescription: label)?.withSymbolConfiguration(cfg)
+        muteBtn.setAccessibilityLabel(label)
     }
 
     private func updateAutoplayIcon() {
-        autoplayBtn.contentTintColor = LocalStore.shared.settings.autoplayNext ? YTTheme.red : NSColor.white.withAlphaComponent(0.6)
+        let on = LocalStore.shared.settings.autoplayNext
+        autoplayBtn.contentTintColor = on ? YTTheme.red : NSColor.white.withAlphaComponent(0.85)
+        autoplayBtn.accessibilityValueText = on ? "On" : "Off"
     }
 
     private func updateCCIcon() {
         ccBtn.contentTintColor = isCaptionsOn ? YTTheme.red : NSColor.white.withAlphaComponent(0.85)
+        ccBtn.accessibilityValueText = isCaptionsOn ? "On" : "Off"
     }
 
     private func showControlsTemporarily(autoHide: Bool = true) {
+        hideControlsWork?.cancel()
+        controlsContainer.isHidden = false
         NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = 0.15
+            ctx.duration = motionDuration(0.15)
             controlsContainer.animator().alphaValue = 1
         }
         if autoHide && isPlaying { scheduleHideControls() }
+    }
+
+    /// Keyboard users tabbing through the bar must not lose it while a control inside has focus.
+    private func isFocusInsideControls() -> Bool {
+        guard let fr = window?.firstResponder as? NSView else { return false }
+        return fr.isDescendant(of: controlsContainer)
+    }
+
+    private func isPointerInsideControls() -> Bool {
+        guard let win = window, !controlsContainer.isHidden else { return false }
+        let pt = controlsContainer.convert(win.mouseLocationOutsideOfEventStream, from: nil)
+        return controlsContainer.bounds.contains(pt)
     }
 
     private func scheduleHideControls(delay: TimeInterval = 2.6) {
         hideControlsWork?.cancel()
         let work = DispatchWorkItem { [weak self] in
             guard let self = self, self.isPlaying else { return }
-            NSAnimationContext.runAnimationGroup { ctx in
-                ctx.duration = 0.25
-                self.controlsContainer.animator().alphaValue = 0
+            if self.isSettingsMenuOpen || self.isPointerInsideControls() || self.isFocusInsideControls() {
+                self.scheduleHideControls(delay: 1.5)
+                return
             }
+            NSAnimationContext.runAnimationGroup({ ctx in
+                ctx.duration = motionDuration(0.25)
+                self.controlsContainer.animator().alphaValue = 0
+            }, completionHandler: { [weak self] in
+                guard let self = self, self.isPlaying, !self.isSettingsMenuOpen, self.controlsContainer.alphaValue <= 0.01 else { return }
+                self.controlsContainer.isHidden = true
+            })
         }
         hideControlsWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
     }
 
     private func flashHUD(_ text: String) {
+        let token = UUID()
+        hudToken = token
         hudLabel.stringValue = text
         hudBadge.isHidden = false
         hudBadge.alphaValue = 1
         hudWork?.cancel()
         let w = DispatchWorkItem { [weak self] in
-            NSAnimationContext.runAnimationGroup { ctx in
-                ctx.duration = 0.25
+            NSAnimationContext.runAnimationGroup({ ctx in
+                ctx.duration = motionDuration(0.25)
                 self?.hudBadge.animator().alphaValue = 0
-            } completionHandler: {
-                self?.hudBadge.isHidden = true
-            }
+            }, completionHandler: { [weak self] in
+                guard let self = self, self.hudToken == token, self.hudBadge.alphaValue <= 0.01 else { return }
+                self.hudBadge.isHidden = true
+            })
         }
         hudWork = w
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.65, execute: w)
@@ -1351,6 +1746,7 @@ final class PlayerView: NSView, AVPictureInPictureControllerDelegate {
     private func showToast(_ text: String) {
         toastLabel.stringValue = text
         toastView.isHidden = false
+        postAccessibilityAnnouncement(text)
         toastWork?.cancel()
         let w = DispatchWorkItem { [weak self] in self?.toastView.isHidden = true }
         toastWork = w
@@ -1360,32 +1756,37 @@ final class PlayerView: NSView, AVPictureInPictureControllerDelegate {
     private func showError(_ msg: String) {
         errorLabel.stringValue = msg
         errorLabel.isHidden = false
+        postAccessibilityAnnouncement(msg)
     }
 
     private func setupRemoteCommands() {
+        PlayerView.activeRemoteOwner = self
+        guard !PlayerView.remoteHandlersInstalled else { return }
+        PlayerView.remoteHandlersInstalled = true
         let cc = MPRemoteCommandCenter.shared()
-        cc.playCommand.addTarget { [weak self] _ in
-            guard let self = self else { return .commandFailed }
-            if !self.isPlaying { self.togglePlayPause() }
+        cc.playCommand.addTarget { _ in
+            guard let owner = PlayerView.activeRemoteOwner else { return .commandFailed }
+            if !owner.isPlaying { owner.togglePlayPause() }
             return .success
         }
-        cc.pauseCommand.addTarget { [weak self] _ in
-            guard let self = self else { return .commandFailed }
-            if self.isPlaying { self.togglePlayPause() }
+        cc.pauseCommand.addTarget { _ in
+            guard let owner = PlayerView.activeRemoteOwner else { return .commandFailed }
+            if owner.isPlaying { owner.togglePlayPause() }
             return .success
         }
-        cc.togglePlayPauseCommand.addTarget { [weak self] _ in
-            self?.togglePlayPause()
+        cc.togglePlayPauseCommand.addTarget { _ in
+            guard let owner = PlayerView.activeRemoteOwner else { return .commandFailed }
+            owner.togglePlayPause()
             return .success
         }
-        cc.nextTrackCommand.addTarget { [weak self] _ in
-            guard let self = self else { return .commandFailed }
-            self.delegate?.playerDidRequestNext(self)
+        cc.nextTrackCommand.addTarget { _ in
+            guard let owner = PlayerView.activeRemoteOwner else { return .commandFailed }
+            owner.delegate?.playerDidRequestNext(owner)
             return .success
         }
-        cc.previousTrackCommand.addTarget { [weak self] _ in
-            guard let self = self else { return .commandFailed }
-            self.delegate?.playerDidRequestPrevious(self)
+        cc.previousTrackCommand.addTarget { _ in
+            guard let owner = PlayerView.activeRemoteOwner else { return .commandFailed }
+            owner.delegate?.playerDidRequestPrevious(owner)
             return .success
         }
     }

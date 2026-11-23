@@ -688,11 +688,13 @@ final class YouTubeAPI {
         }
     }
 
-    func fetchSubscriptionsFeed(channels: [SubscribedChannel], completion: @escaping ([VideoItem]) -> Void) {
-        guard !channels.isEmpty else { completion([]); return }
+    /// `failedChannels` counts channel requests that failed, so callers can say when results are partial or missing.
+    func fetchSubscriptionsFeed(channels: [SubscribedChannel], completion: @escaping (_ videos: [VideoItem], _ failedChannels: Int) -> Void) {
+        guard !channels.isEmpty else { completion([], 0); return }
         let group = DispatchGroup()
         let lock = NSLock()
         var buckets: [[VideoItem]] = []
+        var failures = 0
         // Videos tab params
         let videosParams = "EgZ2aWRlb3PyBgQKAjoA"
         for ch in channels.prefix(12) {
@@ -704,6 +706,8 @@ final class YouTubeAPI {
                             .prefix(6)
                     }
                     lock.lock(); buckets.append(Array(vids)); lock.unlock()
+                } else {
+                    lock.lock(); failures += 1; lock.unlock()
                 }
                 group.leave()
             }
@@ -718,7 +722,7 @@ final class YouTubeAPI {
                     if seen.insert(v.id).inserted { out.append(v) }
                 }
             }
-            completion(out)
+            completion(out, failures)
         }
     }
 
@@ -827,17 +831,18 @@ final class YouTubeAPI {
 
     // MARK: - 8. Shorts Feed
 
-    func fetchShortsFeed(completion: @escaping ([VideoItem]) -> Void) {
+    /// `failed` is true only when the request itself failed, so an empty feed and a failed fetch get different copy.
+    func fetchShortsFeed(completion: @escaping (_ items: [VideoItem], _ failed: Bool) -> Void) {
         search(query: "#shorts", filters: SearchFilters(sortBy: .relevance, uploadDate: .thisWeek, type: .video, duration: .short)) { res in
             switch res {
-            case .failure: completion([])
+            case .failure: completion([], true)
             case .success(let (items, _)):
                 let vids = items.compactMap { item -> VideoItem? in
                     guard case .video(var v) = item else { return nil }
                     v.isShort = true
                     return v
                 }
-                completion(vids)
+                completion(vids, false)
             }
         }
     }

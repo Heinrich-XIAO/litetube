@@ -81,7 +81,9 @@ final class ImageCache {
             var cost = 0
             if let data = data, !data.isEmpty {
                 autoreleasepool {
-                    if let cg = Self.downsample(data: data, maxPixelSize: maxPixelSize) {
+                    // maxPixelSize is in points at the call sites; decode at backing scale so thumbnails stay sharp on Retina.
+                    let scale = Int(NSScreen.main?.backingScaleFactor ?? 2)
+                    if let cg = Self.downsample(data: data, maxPixelSize: maxPixelSize * scale) {
                         cost = cg.bytesPerRow * cg.height
                         decoded = NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
                     }

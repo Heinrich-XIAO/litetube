@@ -114,10 +114,10 @@ final class LocalHLSServer {
     // MARK: - Session Preparation (SIDX Parsing)
 
     /// Prepares an HLS session for a chosen video format (or nil for Audio Only) + audio format.
-    /// Keeps ONLY the latest session in memory to guarantee zero session leaks.
     func prepareSession(
         videoFormats: [StreamFormat],
         audioFormat: StreamFormat?,
+        previousSessionId: String? = nil,
         completion: @escaping (Result<(sessionId: String, masterURL: URL), Error>) -> Void
     ) {
         DispatchQueue.global(qos: .userInitiated).async {
@@ -166,8 +166,9 @@ final class LocalHLSServer {
             let session = Session(id: String(sid), videoTracks: parsedVideos, audioTrack: parsedAudio, orderedVideoItags: ordered)
 
             self.lock.lock()
-            // Evict old sessions so we never accumulate stale segment maps
-            self.sessions.removeAll()
+            if let prev = previousSessionId {
+                self.sessions.removeValue(forKey: prev)
+            }
             self.sessions[session.id] = session
             self.lock.unlock()
 
@@ -195,14 +196,27 @@ final class LocalHLSServer {
     }
 
     /// Creates a loopback Range-proxied URL for an unrestricted progressive MP4 stream.
-    func prepareProgressiveSession(format: StreamFormat) -> URL {
+    func prepareProgressiveSession(format: StreamFormat, previousSessionId: String? = nil) -> (sessionId: String, url: URL) {
         let sid = String(UUID().uuidString.prefix(8).lowercased())
         lock.lock()
-        sessions.removeAll()
-        progressiveSessions.removeAll()
+        if let prev = previousSessionId {
+            progressiveSessions.removeValue(forKey: prev)
+        }
         progressiveSessions[sid] = ProgressiveSession(id: sid, format: format)
         lock.unlock()
-        return URL(string: "http://127.0.0.1:\(self.port)/p/\(sid)/video.mp4")!
+        return (sid, URL(string: "http://127.0.0.1:\(self.port)/p/\(sid)/video.mp4")!)
+    }
+
+    func removeSession(id: String) {
+        lock.lock()
+        sessions.removeValue(forKey: id)
+        lock.unlock()
+    }
+
+    func removeProgressiveSession(id: String) {
+        lock.lock()
+        progressiveSessions.removeValue(forKey: id)
+        lock.unlock()
     }
 
     func clearAllSessions() {

@@ -2,6 +2,7 @@ import Foundation
 
 extension Notification.Name {
     static let liteTubeStoreDidChange = Notification.Name("LiteTubeStoreDidChange")
+    static let liteTubeHistoryDidChange = Notification.Name("LiteTubeHistoryDidChange")
     static let liteTubeQueueDidChange = Notification.Name("LiteTubeQueueDidChange")
     static let liteTubeThemeDidChange = Notification.Name("LiteTubeThemeDidChange")
 }
@@ -43,7 +44,7 @@ final class LocalStore {
         self.data = decoded
     }
 
-    private func save() {
+    private func save(postStoreNotification: Bool = true) {
         let snapshot = self.data
         let url = self.fileURL
         ioQueue.async {
@@ -52,7 +53,11 @@ final class LocalStore {
             }
         }
         DispatchQueue.main.async {
-            NotificationCenter.default.post(name: .liteTubeStoreDidChange, object: nil)
+            if postStoreNotification {
+                NotificationCenter.default.post(name: .liteTubeStoreDidChange, object: nil)
+            } else {
+                NotificationCenter.default.post(name: .liteTubeHistoryDidChange, object: nil)
+            }
         }
     }
 
@@ -113,7 +118,7 @@ final class LocalStore {
         if data.history.count > 250 {
             data.history.removeLast(data.history.count - 250)
         }
-        save()
+        save(postStoreNotification: false)
     }
 
     func savedPosition(for videoId: String) -> Double? {
