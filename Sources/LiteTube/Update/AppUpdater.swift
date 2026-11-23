@@ -12,7 +12,11 @@ final class AppUpdater {
     static let didChange = Notification.Name("LiteTubeUpdaterDidChange")
 
     static let repo = "Heinrich-XIAO/litetube"
-    static let api = "https://api.github.com/repos/\(repo)/releases/latest"
+    /// The release feed. LITETUBE_UPDATE_API_URL points tests at a local copy of the same JSON shape.
+    static var api: String {
+        ProcessInfo.processInfo.environment["LITETUBE_UPDATE_API_URL"]
+            ?? "https://api.github.com/repos/\(repo)/releases/latest"
+    }
     static let userAgent = "LiteTube-Updater"
     static let bundleID = "com.litetube.mac"
     static let checkInterval: TimeInterval = 6 * 3600
@@ -37,6 +41,7 @@ final class AppUpdater {
     private(set) var status = Status()
     private var release: Release?
     private var timer: Timer?
+    private var autoInstallStarted = false
 
     // MARK: - Environment
 
@@ -87,9 +92,27 @@ final class AppUpdater {
             mutate { $0.phase = .failed; $0.error = text }
         }
         guard supported else { return }
+        if ProcessInfo.processInfo.environment["LITETUBE_UPDATE_AUTOINSTALL"] == "1" {
+            // Test hook for the end-to-end run: accept the first offered update without a click.
+            NotificationCenter.default.addObserver(forName: AppUpdater.didChange, object: nil, queue: .main) { [weak self] _ in
+                guard let self, self.status.available, self.status.phase == .idle, !self.autoInstallStarted else { return }
+                self.autoInstallStarted = true
+                self.startInstall()
+            }
+        }
         DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in self?.checkInBackground() }
         timer = Timer.scheduledTimer(withTimeInterval: AppUpdater.checkInterval, repeats: true) { [weak self] _ in
             self?.checkInBackground()
+        }
+    }
+
+    /// Hide the banner for the offered version, and clear a failure so the page stops showing it.
+    func dismissBanner() {
+        if let latest = status.latest {
+            UserDefaults.standard.set(latest, forKey: UpdateBanner.dismissedKey)
+        }
+        mutate { s in
+            if s.phase == .failed { s.phase = .idle; s.error = nil }
         }
     }
 

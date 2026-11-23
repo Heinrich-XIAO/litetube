@@ -47,6 +47,7 @@ final class MainWindowController: NSWindowController,
     private var sidebarRail: Bool { isSidebarCollapsed || activeSidebarRoute == .shorts }
     private var sidebarTargetWidth: CGFloat { sidebarRail ? 72 : 224 }
     private let contentHost = NSView()
+    private let updateBanner = UpdateBanner()
 
     private enum SidebarRoute: Equatable {
         case home, shorts, subscriptions, history, watchLater, liked, queue
@@ -171,7 +172,10 @@ final class MainWindowController: NSWindowController,
 
         let sidebarW = min(max(0, sidebarWidthValue), w)
         sidebarScroll.frame = NSRect(x: 0, y: 0, width: sidebarW, height: regionTop)
-        contentHost.frame = NSRect(x: sidebarW, y: 0, width: max(0, w - sidebarW), height: regionTop)
+        // The update banner sits at the top of the page, and the page gives up that height while it shows.
+        let bannerH: CGFloat = updateBanner.isShown ? UpdateBanner.height : 0
+        contentHost.frame = NSRect(x: sidebarW, y: 0, width: max(0, w - sidebarW), height: max(0, regionTop - bannerH))
+        updateBanner.frame = NSRect(x: sidebarW, y: regionTop - bannerH, width: max(0, w - sidebarW), height: bannerH)
 
         miniShadowHost.frame = NSRect(x: w - 20 - 360, y: 20, width: 360, height: 253)
 
@@ -307,6 +311,8 @@ final class MainWindowController: NSWindowController,
         contentHost.wantsLayer = true
         contentHost.translatesAutoresizingMaskIntoConstraints = true
         root.addSubview(contentHost)
+        updateBanner.onVisibilityChange = { [weak self] in self?.layoutRegions() }
+        root.addSubview(updateBanner)
 
         // Floating Miniplayer
         miniShadowHost.wantsLayer = true

@@ -9,7 +9,12 @@ if [ "$(uname -s)" != "Darwin" ]; then
     exit 1
 fi
 
-VERSION="${LITETUBE_VERSION:-1.0.0}"
+default_version() {
+    # The newest published tag, so an installed build matches the latest release. 0.0.0 when offline.
+    v=$(git -C "$(pwd)" ls-remote --tags --refs origin 2>/dev/null | sed -n 's#.*refs/tags/v\([0-9][0-9.]*\)$#\1#p' | sort -t. -k1,1n -k2,2n -k3,3n | tail -1)
+    echo "${v:-0.0.0}"
+}
+VERSION="${LITETUBE_VERSION:-$(default_version)}"
 VERSION="${VERSION#v}"
 OUT="${1:-LiteTube-$VERSION.pkg}"
 APP="LiteTube.app"

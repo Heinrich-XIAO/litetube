@@ -4,7 +4,12 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT_DIR"
 
-VERSION="${LITETUBE_VERSION:-1.0.0}"
+default_version() {
+    # The newest published tag, so an installed build matches the latest release. 0.0.0 when offline.
+    v=$(git -C "$ROOT_DIR" ls-remote --tags --refs origin 2>/dev/null | sed -n 's#.*refs/tags/v\([0-9][0-9.]*\)$#\1#p' | sort -t. -k1,1n -k2,2n -k3,3n | tail -1)
+    echo "${v:-0.0.0}"
+}
+VERSION="${LITETUBE_VERSION:-$(default_version)}"
 VERSION="${VERSION#v}"
 
 echo "Building LiteTube $VERSION (release, arm64)..."
