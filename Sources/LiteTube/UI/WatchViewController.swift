@@ -161,41 +161,48 @@ final class WatchViewController: NSViewController, PlayerViewDelegate, NSTableVi
         channelBtn.translatesAutoresizingMaskIntoConstraints = false
         channelBtn.setContentHuggingPriority(.required, for: .horizontal)
         channelBtn.setContentHuggingPriority(.required, for: .vertical)
+        // One line: the channel name is never squeezed into a wrap or an ellipsis by its neighbours.
+        channelBtn.cell?.wraps = false
+        channelBtn.setContentCompressionResistancePriority(.required, for: .horizontal)
 
         subscribeBtn.useDynamicThemeColors = true
         subscribeBtn.title = "Subscribe"
-        subscribeBtn.cornerRadiusValue = 18
+        subscribeBtn.cornerRadiusValue = 17
+        subscribeBtn.setAccessibilityLabel("Subscribe")
+        subscribeBtn.setContentCompressionResistancePriority(.required, for: .horizontal)
         subscribeBtn.target = self; subscribeBtn.action = #selector(toggleSubscribe)
         subscribeBtn.translatesAutoresizingMaskIntoConstraints = false
 
+        // Every action pill shares one radius, at least half the 32pt pill height, so all are fully rounded.
         likeBtn.title = "Like"
         likeBtn.image = NSImage(systemSymbolName: "hand.thumbsup", accessibilityDescription: "Like")
         likeBtn.setAccessibilityLabel("Like")
-        likeBtn.cornerRadiusValue = 16
+        likeBtn.cornerRadiusValue = 17
         likeBtn.target = self; likeBtn.action = #selector(toggleLike)
-
 
         shareBtn.title = "Share"
         shareBtn.image = NSImage(systemSymbolName: "square.and.arrow.up", accessibilityDescription: "Share")
-        shareBtn.cornerRadiusValue = 16
+        shareBtn.cornerRadiusValue = 17
         shareBtn.target = self; shareBtn.action = #selector(shareClicked)
 
         saveBtn.title = "Save"
         saveBtn.image = NSImage(systemSymbolName: "bookmark", accessibilityDescription: "Save")
-        saveBtn.cornerRadiusValue = 16
+        saveBtn.cornerRadiusValue = 17
         saveBtn.target = self; saveBtn.action = #selector(saveClicked)
 
         queueBtn.title = "Queue"
         queueBtn.image = NSImage(systemSymbolName: "text.badge.plus", accessibilityDescription: "Add to Queue")
-        queueBtn.cornerRadiusValue = 16
+        queueBtn.setAccessibilityLabel("Add to Queue")
+        queueBtn.toolTip = "Add this video to the queue"
+        queueBtn.cornerRadiusValue = 17
         queueBtn.target = self; queueBtn.action = #selector(addCurrentToQueue)
 
+        // Icon-only: a square pill with the standard "open externally" glyph. The compass read as "explore".
         browserBtn.title = ""
-        browserBtn.image = NSImage(systemSymbolName: "safari", accessibilityDescription: "Open in default browser")
+        browserBtn.image = NSImage(systemSymbolName: "arrow.up.right.square", accessibilityDescription: "Open in default browser")
         browserBtn.toolTip = "Open in default browser"
         browserBtn.setAccessibilityLabel("Open in default browser")
-        browserBtn.cornerRadiusValue = 16
-        browserBtn.horizontalPadding = 10
+        browserBtn.cornerRadiusValue = 17
         browserBtn.target = self; browserBtn.action = #selector(openInBrowser)
 
         subCountLabel.setContentHuggingPriority(.required, for: .horizontal)
@@ -281,11 +288,13 @@ final class WatchViewController: NSViewController, PlayerViewDelegate, NSTableVi
 
         // Comments header + sort
         sortTopBtn.title = "Top"
+        sortTopBtn.setAccessibilityLabel("Sort comments by top")
         sortTopBtn.isSelectedPill = true
         sortTopBtn.cornerRadiusValue = 14
         sortTopBtn.target = self; sortTopBtn.action = #selector(sortCommentsTop)
 
         sortNewestBtn.title = "Newest"
+        sortNewestBtn.setAccessibilityLabel("Sort comments by newest")
         sortNewestBtn.cornerRadiusValue = 14
         sortNewestBtn.target = self; sortNewestBtn.action = #selector(sortCommentsNewest)
 
@@ -339,6 +348,7 @@ final class WatchViewController: NSViewController, PlayerViewDelegate, NSTableVi
         sidebarColumn.addSubview(tabStack)
 
         transcriptSearch.placeholderString = "Search transcript..."
+        transcriptSearch.setAccessibilityLabel("Search transcript")
         transcriptSearch.delegate = self
         transcriptSearch.isHidden = true
         transcriptSearch.translatesAutoresizingMaskIntoConstraints = false
@@ -350,6 +360,7 @@ final class WatchViewController: NSViewController, PlayerViewDelegate, NSTableVi
         queueHeaderView.translatesAutoresizingMaskIntoConstraints = false
         clearQueueBtn.title = "Clear"
         clearQueueBtn.setAccessibilityLabel("Clear queue")
+        clearQueueBtn.toolTip = "Clear queue"
         clearQueueBtn.isBordered = false
         clearQueueBtn.font = .systemFont(ofSize: 12, weight: .semibold)
         clearQueueBtn.target = self; clearQueueBtn.action = #selector(clearQueueClicked)
@@ -639,6 +650,8 @@ final class WatchViewController: NSViewController, PlayerViewDelegate, NSTableVi
 
         attachPlayerView()
         titleLabel.stringValue = video.title.isEmpty ? "Loading..." : video.title
+        // The title is capped at two lines, so the full text is offered as a tooltip.
+        titleLabel.toolTip = video.title
         avatarView.image = nil
         setChannelButtonTitle(video.channelName)
         setSubscriberCount("")
@@ -681,6 +694,8 @@ final class WatchViewController: NSViewController, PlayerViewDelegate, NSTableVi
                 }
                 self.setSubscriberCount(d.subscriberCountText)
                 self.likeBtn.title = d.likeCountText.isEmpty ? "Like" : d.likeCountText
+                // The visible title is a bare number, so the tooltip says what it counts.
+                self.likeBtn.toolTip = d.likeCountText.isEmpty ? "Like" : "\(d.likeCountText) likes"
                 // The count is part of the spoken state, since the visible title is a number.
                 let liked = LocalStore.shared.isLiked(video.id)
                 self.likeBtn.stateValue = [liked ? "Liked" : "Not liked", d.likeCountText.isEmpty ? nil : "\(d.likeCountText) likes"].compactMap { $0 }.joined(separator: ", ")
@@ -1016,6 +1031,7 @@ final class WatchViewController: NSViewController, PlayerViewDelegate, NSTableVi
         guard let v = currentVideo else { return }
         let subbed = !v.channelId.isEmpty && LocalStore.shared.isSubscribed(channelId: v.channelId)
         subscribeBtn.title = subbed ? "Subscribed ✓" : "Subscribe"
+        // Selected means "active": the subscribed state is shown in the value, not in the fill colour.
         subscribeBtn.isSelectedPill = !subbed
         subscribeBtn.stateValue = subbed ? "Subscribed" : "Not subscribed"
         // Videos opened by URL have no channel ID, so Subscribe can't work yet: disable it and say why.
@@ -1031,7 +1047,8 @@ final class WatchViewController: NSViewController, PlayerViewDelegate, NSTableVi
         // Same toggle pattern as Like: a fixed label and a selected state, not a changing title.
         saveBtn.title = "Save"
         saveBtn.isSelectedPill = saved
-        saveBtn.setAccessibilityLabel("Save to Watch Later")
+        // Save opens a menu (Watch Later, Playlists), so the spoken name says so instead of promising a one-tap toggle.
+        saveBtn.setAccessibilityLabel("Save options")
         saveBtn.stateValue = saved ? "Saved" : "Not saved"
 
         updateQueueBanner()

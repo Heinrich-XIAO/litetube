@@ -246,6 +246,15 @@ final class ClickableView: NSView {
     }
 }
 
+/// Draws pill content inside the horizontal padding, so the icon and label sit centred
+/// rather than hugging the left edge. The intrinsic width already reserves that padding.
+final class PillButtonCell: NSButtonCell {
+    override func drawingRect(forBounds rect: NSRect) -> NSRect {
+        let inset = (controlView as? PillButton)?.horizontalPadding ?? 0
+        return super.drawingRect(forBounds: rect).insetBy(dx: inset, dy: 0)
+    }
+}
+
 final class PillButton: NSButton {
     var useDynamicThemeColors: Bool = true
     var normalBg: NSColor = YTTheme.surface { didSet { updateStyle() } }
@@ -254,12 +263,14 @@ final class PillButton: NSButton {
     var activeFg: NSColor = YTTheme.chipActiveText { didSet { updateStyle() } }
     var isSelectedPill: Bool = false { didSet { updateStyle() } }
     var cornerRadiusValue: CGFloat = 16 { didSet { layer?.cornerRadius = cornerRadiusValue } }
-    var horizontalPadding: CGFloat = 12 { didSet { invalidateIntrinsicContentSize() } }
+    var horizontalPadding: CGFloat = 12 { didSet { invalidateIntrinsicContentSize(); needsDisplay = true } }
     private var isHovered: Bool = false
+    private var isPressed: Bool = false
     private var tracking: NSTrackingArea?
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
+        cell = PillButtonCell(textCell: "")
         isBordered = false
         focusRingType = .default
         wantsLayer = true
@@ -316,18 +327,40 @@ final class PillButton: NSButton {
     }
 
     override var intrinsicContentSize: NSSize {
+        // The cell's size already includes the horizontal padding (see PillButtonCell), so don't add it again.
         let base = super.intrinsicContentSize
         let minW: CGFloat = title.isEmpty ? 32 : 0
-        return NSSize(width: max(minW, base.width + horizontalPadding * 2), height: max(32, base.height + 8))
+        return NSSize(width: max(minW, base.width), height: max(32, base.height + 8))
+    }
+
+    override var isEnabled: Bool { didSet { updateStyle() } }
+
+    override func mouseDown(with event: NSEvent) {
+        isPressed = true
+        updateStyle()
+        super.mouseDown(with: event)
+        isPressed = false
+        updateStyle()
     }
 
     func updateStyle() {
         imagePosition = title.isEmpty ? .imageOnly : .imageLeading
         let blendTarget: NSColor = YTTheme.isDark ? .white : .black
-        let hoverBg = useDynamicThemeColors ? YTTheme.surfaceHover : (normalBg.blended(withFraction: 0.12, of: blendTarget) ?? normalBg)
-        let bg = isSelectedPill ? activeBg : (isHovered ? hoverBg : normalBg)
-        let fg = isSelectedPill ? activeFg : normalFg
-        layer?.backgroundColor = bg.cgColor
+        let base = isSelectedPill ? activeBg : normalBg
+        // Hover and press lighten whichever base is active, so selected pills respond too.
+        let bg: NSColor
+        if isPressed {
+            bg = base.blended(withFraction: 0.18, of: blendTarget) ?? base
+        } else if isHovered {
+            bg = isSelectedPill
+                ? (base.blended(withFraction: 0.08, of: blendTarget) ?? base)
+                : (useDynamicThemeColors ? YTTheme.surfaceHover : (normalBg.blended(withFraction: 0.12, of: blendTarget) ?? normalBg))
+        } else {
+            bg = base
+        }
+        // Disabled pills are dimmed so they don't look like working controls.
+        let fg = (isSelectedPill ? activeFg : normalFg).withAlphaComponent(isEnabled ? 1 : 0.4)
+        layer?.backgroundColor = (isEnabled ? bg : bg.withAlphaComponent(0.5)).cgColor
         contentTintColor = fg
         if title.isEmpty {
             attributedTitle = NSAttributedString(string: "")
