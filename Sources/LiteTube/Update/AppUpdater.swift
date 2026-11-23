@@ -78,6 +78,8 @@ final class AppUpdater {
     /// The in-place swap needs only the write bit on the folder holding the app. When it is missing,
     /// the verified package goes to macOS Installer instead (the same split as can_swap() in updater.py).
     var canSwap: Bool {
+        // Test seam for the Installer hand-off: LITETUBE_UPDATE_FORCE_INSTALLER=1 forces the fallback.
+        if ProcessInfo.processInfo.environment["LITETUBE_UPDATE_FORCE_INSTALLER"] == "1" { return false }
         guard let app = AppUpdater.appPath else { return false }
         if app.contains("/AppTranslocation/") || app.hasPrefix("/Volumes/") { return false }
         return FileManager.default.isWritableFile(atPath: (app as NSString).deletingLastPathComponent)
@@ -169,6 +171,8 @@ final class AppUpdater {
         req.setValue(AppUpdater.userAgent, forHTTPHeaderField: "User-Agent")
         req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
         req.timeoutInterval = 15
+        // Never answer from the HTTP cache: a stale release feed would hide a new version.
+        req.cachePolicy = .reloadIgnoringLocalCacheData
         let (data, _) = try await URLSession.shared.data(for: req)
         return try AppUpdater.parseRelease(data)
     }
@@ -254,7 +258,7 @@ final class AppUpdater {
         let digest = try AppUpdater.sha256(of: part)
         if let want, digest != want {
             try? FileManager.default.removeItem(at: part)
-            throw UpdateError("checksum mismatch for \(asset.name)")
+            throw UpdateError("checksum mismatch for \(asset.name): expected \(want), got \(digest)")
         }
         try? FileManager.default.removeItem(at: dest)
         try FileManager.default.moveItem(at: part, to: dest)
@@ -266,6 +270,8 @@ final class AppUpdater {
         guard let sums else { return nil }
         var req = URLRequest(url: sums.url)
         req.setValue(AppUpdater.userAgent, forHTTPHeaderField: "User-Agent")
+        // A cached checksum file from an earlier release would reject a good download.
+        req.cachePolicy = .reloadIgnoringLocalCacheData
         guard let (data, _) = try? await URLSession.shared.data(for: req) else { return nil }
         return AppUpdater.parseChecksums(String(decoding: data, as: UTF8.self), name: name)
     }
@@ -685,7 +691,7 @@ private final class FileDownloader: NSObject, URLSessionDownloadDelegate {
             let d = FileDownloader(dest: dest, expectedSize: expectedSize, progress: progress) { cont.resume(with: $0) }
             let session = URLSession(configuration: .default, delegate: d, delegateQueue: nil)
             d.session = session
-            var req = URLRequest(url: url, timeoutInterval: 60)
+            var req = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 60)
             req.setValue(AppUpdater.userAgent, forHTTPHeaderField: "User-Agent")
             session.downloadTask(with: req).resume()
         }
