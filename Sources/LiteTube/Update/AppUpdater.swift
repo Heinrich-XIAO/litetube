@@ -75,8 +75,13 @@ final class AppUpdater {
         return FileManager.default.isWritableFile(atPath: (app as NSString).deletingLastPathComponent)
     }
 
-    /// The swap needs only the write bit on the folder holding the app.
-    var canSwap: Bool { canInstall }
+    /// The in-place swap needs only the write bit on the folder holding the app. When it is missing,
+    /// the verified package goes to macOS Installer instead (the same split as can_swap() in updater.py).
+    var canSwap: Bool {
+        guard let app = AppUpdater.appPath else { return false }
+        if app.contains("/AppTranslocation/") || app.hasPrefix("/Volumes/") { return false }
+        return FileManager.default.isWritableFile(atPath: (app as NSString).deletingLastPathComponent)
+    }
 
     var rollbackAvailable: Bool {
         guard supported, canInstall, AppUpdater.appPath == "/Applications/LiteTube.app" else { return false }
